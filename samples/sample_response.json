@@ -1,0 +1,216 @@
+{
+  "draftText": "hello world",
+  "confidence": 1.0,
+  "rawBraille": "⠓⠑⠇⠇⠕ ⠺⠕⠗⠇⠙",
+  "rawCells": [
+    {
+      "line": 1,
+      "cellIndex": 1,
+      "dots": [
+        1,
+        2,
+        5
+      ],
+      "bbox": [
+        44,
+        44,
+        64,
+        64
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 2,
+      "dots": [
+        1,
+        5
+      ],
+      "bbox": [
+        74,
+        44,
+        94,
+        64
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 3,
+      "dots": [
+        1,
+        2,
+        3
+      ],
+      "bbox": [
+        104,
+        44,
+        112,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 4,
+      "dots": [
+        1,
+        2,
+        3
+      ],
+      "bbox": [
+        134,
+        44,
+        142,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 5,
+      "dots": [
+        1,
+        3,
+        5
+      ],
+      "bbox": [
+        164,
+        44,
+        184,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 7,
+      "dots": [
+        2,
+        4,
+        5,
+        6
+      ],
+      "bbox": [
+        224,
+        44,
+        244,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 8,
+      "dots": [
+        1,
+        3,
+        5
+      ],
+      "bbox": [
+        254,
+        44,
+        274,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 9,
+      "dots": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "bbox": [
+        284,
+        44,
+        304,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 10,
+      "dots": [
+        1,
+        2,
+        3
+      ],
+      "bbox": [
+        314,
+        44,
+        322,
+        76
+      ],
+      "confidence": 1.0
+    },
+    {
+      "line": 1,
+      "cellIndex": 11,
+      "dots": [
+        1,
+        4,
+        5
+      ],
+      "bbox": [
+        344,
+        44,
+        364,
+        64
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "providerRequestId": "ocr_4bb9996cec584daf813607386c5cf5ca",
+  "flags": [
+    {
+      "text": "",
+      "reason": "Back-translation used the built-in Grade 1 (uncontracted) UEB table. Grade 2 contractions, if present, were not interpreted.",
+      "category": "possible_contraction_issue",
+      "severity": "low"
+    },
+    {
+      "text": "",
+      "reason": "Liblouis back-translation was not available; the built-in Grade 1 fallback translator was used.",
+      "category": "possible_contraction_issue",
+      "severity": "low"
+    },
+    {
+      "text": "",
+      "reason": "Subject context was provided; subject-specific or technical terms may be transcribed incorrectly and must be checked by a specialist.",
+      "category": "subject_specific_term",
+      "severity": "low"
+    }
+  ],
+  "pageResults": [
+    {
+      "pageNumber": 1,
+      "text": "hello world",
+      "confidence": 1.0,
+      "flags": [
+        {
+          "text": "",
+          "reason": "Back-translation used the built-in Grade 1 (uncontracted) UEB table. Grade 2 contractions, if present, were not interpreted.",
+          "category": "possible_contraction_issue",
+          "severity": "low"
+        },
+        {
+          "text": "",
+          "reason": "Liblouis back-translation was not available; the built-in Grade 1 fallback translator was used.",
+          "category": "possible_contraction_issue",
+          "severity": "low"
+        },
+        {
+          "text": "",
+          "reason": "Subject context was provided; subject-specific or technical terms may be transcribed incorrectly and must be checked by a specialist.",
+          "category": "subject_specific_term",
+          "severity": "low"
+        }
+      ]
+    }
+  ]
+}
