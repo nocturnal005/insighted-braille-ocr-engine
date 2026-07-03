@@ -1,0 +1,17 @@
+{
+  "sample_id": "real_001",
+  "source_type": "synthetic_printout",
+  "braille_type": "ueb_grade_1",
+  "capture_method": "phone_photo",
+  "lighting": "good_even",
+  "contrast": "high",
+  "skew": "none",
+  "crop_quality": "braille_only",
+  "dot_size_px_estimate": null,
+  "permission_status": "synthetic",
+  "ground_truth_verified_by_role": "generated_synthetic",
+  "contains_real_pupil_data": false,
+  "contains_live_assessment_material": false,
+  "exif_removed": true,
+  "notes": ""
+}

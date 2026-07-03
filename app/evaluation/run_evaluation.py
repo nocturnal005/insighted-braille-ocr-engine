@@ -20,6 +20,11 @@ confidence calibration, failure modes, and recommendations. An empty real
 dataset exits cleanly - that is the expected state until safe, anonymised,
 approved samples are added.
 
+`--write-report PATH` (real_anonymised only) additionally writes a
+sanitized JSON baseline report - metrics, buckets, groups, and
+recommendations only; never draft text, ground truth, image data, or
+unsafe file names.
+
 Prints metrics only - never transcription text, ground truth, image data,
 or unsafe file names.
 """
@@ -28,7 +33,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -48,6 +55,7 @@ DATASETS = {
     "embossed": ("./samples/embossed_images", "./samples/embossed_ground_truth"),
 }
 
+from app.core.config import get_settings
 from app.evaluation.metrics import (
     character_error_rate,
     normalise_text,
@@ -62,6 +70,13 @@ MIME_BY_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
 }
+
+REPORT_SCHEMA_VERSION = "1.0"
+REPORT_NOTE = (
+    "Draft-only OCR. Real-photo validation measures usefulness and "
+    "correction burden; it does not certify Braille accuracy. "
+    "QTVI/Braille-literate specialist verification remains mandatory."
+)
 
 
 def _build_request(path: Path, mime: str) -> OcrRequest:
@@ -195,8 +210,55 @@ def _recommendations(
     return recs
 
 
+def _report_skeleton(samples: int, evaluated: int, skipped: int, failed: int) -> dict:
+    """Top-level fields shared by minimal and full baseline reports."""
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "engine_version": get_settings().service_version,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "dataset": REAL_DATASET,
+        "counts": {
+            "samples": samples,
+            "evaluated": evaluated,
+            "skipped": skipped,
+            "failed": failed,
+        },
+        "note": REPORT_NOTE,
+    }
+
+
+def _summary_block(rows: list[dict]) -> dict:
+    """Aggregate metrics for one group of rows (metrics only, no text)."""
+    if not rows:
+        return {"n": 0}
+    return {
+        "n": len(rows),
+        "mean_cer": round(_mean([r["cer"] for r in rows]), 4),
+        "median_cer": round(median(r["cer"] for r in rows), 4),
+        "mean_wer": round(_mean([r["wer"] for r in rows]), 4),
+        "median_wer": round(median(r["wer"] for r in rows), 4),
+        "mean_confidence": round(_mean([r["confidence"] for r in rows]), 4),
+        "mean_repeatability": round(_mean([r["repeatability"] for r in rows]), 4),
+        "mean_ms": round(_mean([r["ms"] for r in rows]), 1),
+    }
+
+
+def _write_report_file(path: Path, report: dict, evaluated: int) -> None:
+    """Write the sanitized JSON report and print one confirmation line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"baseline report written: {path} (evaluated={evaluated}, "
+        "metrics only - no draft or ground-truth text)"
+    )
+
+
 def run_real_evaluation(
-    images_dir: Path, truth_dir: Path, metadata_dir: Path, runs: int
+    images_dir: Path,
+    truth_dir: Path,
+    metadata_dir: Path,
+    runs: int,
+    write_report: Path | None = None,
 ) -> int:
     """Metadata-gated evaluation + diagnostics for the real-photo dataset."""
     samples = discover_samples(images_dir, truth_dir, metadata_dir)
@@ -213,6 +275,9 @@ def run_real_evaluation(
             "\nnote: all OCR output is draft-only and requires QTVI or "
             "Braille-literate specialist verification."
         )
+        if write_report is not None:
+            print("\nno evaluable samples - writing minimal baseline report.")
+            _write_report_file(write_report, _report_skeleton(0, 0, 0, 0), 0)
         return 0
 
     skipped = [s for s in samples if not s.evaluable]
@@ -227,6 +292,11 @@ def run_real_evaluation(
             f"\n{len(samples)} sample(s) present but none are evaluable - fix "
             "the reasons above (run the dataset audit for details)."
         )
+        if write_report is not None:
+            print("no evaluable samples - writing minimal baseline report.")
+            _write_report_file(
+                write_report, _report_skeleton(len(samples), 0, len(skipped), 0), 0
+            )
         return 0
 
     rows: list[dict] = []
@@ -344,9 +414,10 @@ def run_real_evaluation(
             print(f"  {fieldname}: " + "  ".join(cells))
 
     # --- 5. recommendations ------------------------------------------------------
+    recommendations = _recommendations(all_rows, group_stats, len(grade2_rows))
     print()
     print("recommendations:")
-    for rec in _recommendations(all_rows, group_stats, len(grade2_rows)):
+    for rec in recommendations:
         print(f"  - {rec}")
 
     print()
@@ -356,6 +427,57 @@ def run_real_evaluation(
         "measures usefulness and correction burden; it does not certify "
         "Braille accuracy."
     )
+
+    # --- optional sanitized baseline report (metrics only, no text) -----------
+    if write_report is not None:
+        report = _report_skeleton(
+            len(samples), len(all_rows), len(skipped), len(failed)
+        )
+        report["summary"] = _summary_block(rows)
+        if grade2_rows:
+            report["grade2_summary"] = _summary_block(grade2_rows)
+        report["error_buckets"] = {
+            name: {
+                "n": len(scores),
+                "avg_confidence": round(_mean(scores), 4) if scores else None,
+            }
+            for name, scores in bucket_confidence.items()
+        }
+        report["calibration"] = _calibration_note(bucket_confidence)
+        report["groups"] = {
+            fieldname: {
+                value: {
+                    "mean_cer": round(_mean([r["cer"] for r in members]), 4),
+                    "mean_confidence": round(
+                        _mean([r["confidence"] for r in members]), 4
+                    ),
+                    "n": len(members),
+                }
+                for value, members in sorted(by_value.items())
+                if members
+            }
+            for fieldname, by_value in group_stats.items()
+        }
+        report["flag_categories"] = [
+            {"category": category, "images": count}
+            for category, count in flag_images.most_common()
+        ]
+        report["recommendations"] = recommendations
+        report["samples"] = [
+            {
+                "label": row["sample"].safe_label,
+                "cer": round(row["cer"], 4),
+                "wer": round(row["wer"], 4),
+                "confidence": round(row["confidence"], 4),
+                "repeatability": round(row["repeatability"], 4),
+                "ms": round(row["ms"], 1),
+                "bucket": _bucket(row),
+                "flag_categories": sorted(row["flag_categories"]),
+            }
+            for row in all_rows
+        ]
+        print()
+        _write_report_file(write_report, report, len(all_rows))
     return 0
 
 
@@ -372,6 +494,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--runs", type=int, default=3, help="Runs per image for repeatability (default 3)"
     )
+    parser.add_argument(
+        "--write-report",
+        metavar="PATH",
+        help=(
+            "Write a sanitized JSON baseline report to PATH (metrics only - "
+            "never draft text, ground truth, or image data). Applies to the "
+            "real_anonymised dataset; ignored for other datasets."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.dataset == REAL_DATASET:
@@ -380,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.truth) if args.truth else REAL_TRUTH_DIR,
             Path(args.metadata) if args.metadata else REAL_METADATA_DIR,
             args.runs,
+            write_report=Path(args.write_report) if args.write_report else None,
         )
 
     if args.dataset:
