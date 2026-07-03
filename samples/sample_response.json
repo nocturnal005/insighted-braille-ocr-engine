@@ -1,6 +1,6 @@
 {
   "draftText": "hello world",
-  "confidence": 1.0,
+  "confidence": 0.95,
   "rawBraille": "⠓⠑⠇⠇⠕ ⠺⠕⠗⠇⠙",
   "rawCells": [
     {
@@ -165,7 +165,7 @@
       "confidence": 1.0
     }
   ],
-  "providerRequestId": "ocr_4bb9996cec584daf813607386c5cf5ca",
+  "providerRequestId": "ocr_215239e2e8ef496a9fe97d0ba1fa63a3",
   "flags": [
     {
       "text": "",
@@ -190,7 +190,7 @@
     {
       "pageNumber": 1,
       "text": "hello world",
-      "confidence": 1.0,
+      "confidence": 0.95,
       "flags": [
         {
           "text": "",

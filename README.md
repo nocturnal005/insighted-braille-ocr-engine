@@ -167,21 +167,33 @@ task ids, pupil data, or API keys.
 
 1. **Image intake** — safe base64 data URL decode; MIME, size, and pixel
    validation; PDF and unsupported types rejected with controlled flags.
-2. **Preprocessing** — denoise, CLAHE contrast enhancement, adaptive
-   thresholding, polarity check, optional deskew; heuristic quality score.
-3. **Dot detection** — contour analysis with circularity and size filters;
-   per-dot confidence.
+2. **Preprocessing** — two binarisation strategies (Stage 3D-D):
+   * *dark path*: denoise, CLAHE contrast enhancement, adaptive
+     thresholding, polarity check, optional deskew (dark printed dots);
+   * *emboss path*: illumination flattening, then highlight/shadow blob
+     pairing along a self-calibrated light direction, reconstructing one
+     clean candidate at each raised dot's true centre (embossed
+     photographs). A heuristic quality score accompanies each.
+3. **Dot detection & variant selection** — contour analysis with
+   circularity and size filters and per-dot confidence (centre, radius,
+   area, bounding box); both preprocessing variants are detected and
+   grouped, and the one whose dots actually form a Braille grid wins.
 4. **Cell grouping** — grid fitting of the 2×3 Braille cell structure:
    estimates dot pitch and cell advance, resolves the column-anchor
-   ambiguity, and assigns dots to numbered positions 1–6.
+   ambiguity, corrects residual skew measured from the dot geometry,
+   rescues collapsed dot rows (or fails safely when they cannot be
+   separated), and assigns dots to numbered positions 1–6.
 5. **Line reconstruction** — orders lines and cells, derives word spacing
    from blank grid cells, emits `rawCells`.
 6. **Braille decoding** — dot patterns → Unicode Braille (`rawBraille`).
 7. **Back-translation** — Liblouis if installed; otherwise a built-in
    Grade 1 (uncontracted) UEB fallback translator plus an explicit flag.
 8. **Confidence & flags** — blends image quality, detection certainty,
-   grid fit, line certainty, and translation completeness into `confidence`,
-   plus the uncertainty flags listed above.
+   dot-spacing regularity, grid fit, line certainty, and translation
+   completeness into `confidence`, plus the uncertainty flags listed above.
+   Honesty caps: embossed-photo runs never exceed **0.82** and fallback
+   (non-Liblouis) translation never exceeds **0.95** — uncertain conditions
+   must never read as near-certainty.
 
 Liblouis is **not** image OCR — it only back-translates the already-detected
 Braille cells. If it is not installed, nothing crashes; the response still
@@ -196,16 +208,55 @@ python -m app.evaluation.sample_generator
 ```
 
 Run the evaluation harness (CER, WER, repeatability, timing, failures,
-confidence-vs-error summary):
+flag-category summary, confidence-vs-error summary):
 
 ```powershell
+# bundled datasets (shorthand)
+python -m app.evaluation.run_evaluation --dataset original
+python -m app.evaluation.run_evaluation --dataset embossed
+
+# or explicit directories (unchanged)
 python -m app.evaluation.run_evaluation --images ./samples/images --truth ./samples/ground_truth
+python -m app.evaluation.run_evaluation --images ./samples/embossed_images --truth ./samples/embossed_ground_truth
 ```
 
 Ground truth is a `.txt` file per image with the same file stem. The
-bundled samples are synthetic best-case renders — they prove the pipeline
-round-trips, not real-world accuracy. The harness prints metrics only, never
+bundled samples are synthetic renders — the `images/` set is ideal
+black-dot-on-white, the `embossed_images/` set simulates embossed-paper
+photographs (highlight/shadow dots, low contrast, noise, uneven light,
+skew, spacing variation). They prove the pipeline round-trips under those
+conditions, not real-world accuracy. The harness prints metrics only, never
 transcription text. Do not use pupil-identifying names in sample files.
+
+### Stage 3D-D: embossed-photo handling
+
+Stage 3D-D adds embossed-paper-photograph support: raised dots that appear
+only as highlight/shadow crescent pairs under directional light are now
+paired and reconstructed into dot candidates, with illumination flattening
+for unevenly lit pages, dot-geometry skew correction, and spacing-tolerant
+row clustering. On the bundled synthetic embossed set (12 samples covering
+low contrast, shadows, skew, paper noise, uneven light, numbers,
+multi-line, wide/tight spacing, faint dots, and rotation) the engine
+decodes all samples at CER 0.000 with confidence honestly capped at 0.82.
+
+This does **not** make the engine production-certified. Output remains
+**draft-only**: InsightEd AI holds every draft for mandatory QTVI /
+Braille-literate specialist verification before teacher feedback or
+export. Real photographs of real embossed pages will be harder than the
+simulation — treat flags and confidence as the honest signal they are.
+
+**Image-capture guidance for best results:**
+
+- photograph or scan **Braille-only page sections** — avoid English print
+  or handwriting on the same image;
+- use good, even lighting; mild directional light is fine (it is what
+  makes embossed dots visible) but avoid harsh shadows;
+- keep the page **flat** and the camera square to it (small tilt is
+  corrected; heavy skew or curvature is not);
+- crop to the Braille area with a small margin, at a resolution where a
+  dot is at least ~6 pixels across;
+- never include pupil names or identifying material — use synthetic or
+  anonymised pages for any testing.
 
 ## Docker
 

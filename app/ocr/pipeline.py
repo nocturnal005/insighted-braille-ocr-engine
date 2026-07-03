@@ -21,9 +21,13 @@ from app.core.logging import get_logger
 from app.models.requests import OcrRequest
 from app.models.responses import Flag, OcrResponse, PageResult
 from app.ocr.braille_decode import token_lines_to_unicode
-from app.ocr.cell_grouping import group_dots
-from app.ocr.confidence import combined_confidence
-from app.ocr.dot_detection import detect_dots
+from app.ocr.cell_grouping import GroupingResult, group_dots
+from app.ocr.confidence import (
+    EMBOSS_MODE_CAP,
+    FALLBACK_TRANSLATION_CAP,
+    combined_confidence,
+)
+from app.ocr.dot_detection import DetectionOutcome, detect_variant, selection_flags
 from app.ocr.flags import (
     CATEGORY_LOW_IMAGE_QUALITY,
     CATEGORY_LOW_OCR_CONFIDENCE,
@@ -34,7 +38,7 @@ from app.ocr.flags import (
 )
 from app.ocr.image_decode import SUPPORTED_MIME_TYPES, ImageDecodeError, decode_data_url
 from app.ocr.line_reconstruction import reconstruct_lines
-from app.ocr.preprocessing import preprocess
+from app.ocr.preprocessing import MODE_EMBOSS, preprocess
 from app.translation.fallback_translator import back_translate_unicode_lines
 from app.translation.liblouis_adapter import liblouis_back_translate
 
@@ -45,6 +49,47 @@ _BRAILLE_BASE = 0x2800
 
 def _new_request_id() -> str:
     return "ocr_" + uuid4().hex
+
+
+def _select_variant(variants) -> tuple[DetectionOutcome, GroupingResult]:
+    """Detect and group on every preprocessing variant, keep the best.
+
+    The winner is the variant whose dots actually form a Braille grid — a
+    blend of grid-fit quality, per-dot shape quality, and spacing
+    regularity. Shape metrics alone are not enough: on an embossed photo the
+    dark path picks up shadow crescents that look dot-like but sit off the
+    true centres, decoding to garbage; the grid-fit term catches that.
+    Strict `>` keeps the first (dark) variant on ties, preserving the
+    original behaviour for clean scans.
+    """
+    candidates: list[tuple[DetectionOutcome, GroupingResult]] = [
+        (detection, group_dots(detection.dots))
+        for detection in (detect_variant(variant) for variant in variants)
+    ]
+    max_dots = max((len(d.dots) for d, _ in candidates), default=0)
+
+    best_detection = DetectionOutcome()
+    best_grouping = GroupingResult()
+    best_score = -1.0
+    for detection, grouping in candidates:
+        # Count factor: absolute floor (a handful of dots is never a page)
+        # plus a relative term so a variant that reconstructs only a small
+        # fraction of what another variant sees cannot win on shape alone.
+        # The 0.6 headroom keeps a noisy variant's inflated count (false
+        # positives) from suppressing a cleaner variant with fewer dots.
+        count_factor = min(1.0, len(detection.dots) / 6.0)
+        if max_dots > 0:
+            count_factor *= min(1.0, len(detection.dots) / (0.6 * max_dots))
+        score = count_factor * (
+            0.45 * grouping.quality
+            + 0.30 * detection.quality
+            + 0.25 * detection.spacing_regularity
+        )
+        if score > best_score:
+            best_score = score
+            best_detection = detection
+            best_grouping = grouping
+    return best_detection, best_grouping
 
 
 def _task_ref(task_id: str) -> str:
@@ -113,7 +158,16 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
 
         # --- Stage 3: preprocessing --------------------------------------------
         pre = preprocess(gray)
-        if pre.quality < 0.30:
+
+        # --- Stages 4-5: dot detection + grouping (best of dark/emboss) ---------
+        detection, grouping = _select_variant(pre.variants)
+        dots = detection.dots
+        detection_quality = detection.quality
+        image_quality = detection.image_quality
+        flags.extend(selection_flags(detection))
+
+        # Image-quality flags reflect the variant that was actually used.
+        if image_quality < 0.30:
             flags.append(
                 make_flag(
                     text="",
@@ -125,7 +179,7 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
                     severity="high",
                 )
             )
-        elif pre.quality < 0.55:
+        elif image_quality < 0.55:
             flags.append(
                 make_flag(
                     text="",
@@ -135,11 +189,6 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
                 )
             )
 
-        # --- Stage 4: dot detection --------------------------------------------
-        dots, detection_quality = detect_dots(pre.binary)
-
-        # --- Stage 5: cell grouping --------------------------------------------
-        grouping = group_dots(dots)
         flags.extend(grouping.flags)
 
         if grouping.total_cells == 0:
@@ -210,13 +259,21 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
             )
 
         confidence = combined_confidence(
-            image_quality=pre.quality,
+            image_quality=image_quality,
             detection_quality=detection_quality,
             grouping_quality=grouping.quality,
             line_quality=grouping.line_quality,
             translation_completeness=translation_completeness,
             has_cells=True,
+            spacing_regularity=detection.spacing_regularity,
         )
+
+        # Honesty caps (see confidence.py): embossed-photo relief detection
+        # and non-Liblouis translation must never read as near-certainty.
+        if detection.mode == MODE_EMBOSS:
+            confidence = min(confidence, EMBOSS_MODE_CAP)
+        if not used_liblouis:
+            confidence = min(confidence, FALLBACK_TRANSLATION_CAP)
 
         if confidence < 0.55:
             flags.append(
@@ -243,12 +300,13 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
         flags = dedupe_flags(flags)
         duration_ms = int((perf_counter() - started) * 1000)
         logger.info(
-            "ocr_completed request_id=%s task_ref=%s mime=%s bytes=%d dots=%d "
+            "ocr_completed request_id=%s task_ref=%s mime=%s bytes=%d mode=%s dots=%d "
             "cells=%d lines=%d liblouis=%s confidence=%.3f flags=%d duration_ms=%d",
             request_id,
             _task_ref(request.taskId),
             _safe_mime_for_log(request.mimeType),
             byte_count,
+            detection.mode,
             len(dots),
             grouping.total_cells,
             len(grouping.lines),

@@ -7,17 +7,31 @@ advance (distance between cell origins), then assigns each dot to a
 line are tried (the leftmost detected column may be column 1 or column 2 of
 its cell, e.g. when a line starts with a capital sign), and the alignment
 with the lowest total grid residual wins.
+
+Stage 3D-D robustness for embossed photographs:
+
+* Residual skew correction — image-level deskew only triggers above ~0.7
+  degrees; smaller camera tilt still smears dot rows together. The median
+  per-row slope of the detected dot centres is measured and sheared out
+  analytically before clustering, so mild skew no longer merges rows.
+  (Cell bounding boxes are therefore reported in this corrected space,
+  consistent with the image-level deskew that already rewarps the page.)
+* Pitch-refined re-clustering — the first row clustering uses a threshold
+  derived from dot radius; once the true vertical dot pitch is measured,
+  rows are re-clustered with a pitch-based threshold, which handles pages
+  with unusually tight or wide dot spacing.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import median
 
 from app.models.responses import Flag
 from app.ocr.dot_detection import Dot
 from app.ocr.flags import (
     CATEGORY_LINE_ORDER_UNCERTAINTY,
+    CATEGORY_LOW_IMAGE_QUALITY,
     CATEGORY_LOW_OCR_CONFIDENCE,
     CATEGORY_UNCLEAR_BRAILLE_CELL,
     dedupe_flags,
@@ -106,6 +120,55 @@ def _fit_line_columns(
     return best_assignment, mean_residual
 
 
+def _row_structure(
+    dots: list[Dot], threshold: float, fallback_unit: float
+) -> tuple[list[list[Dot]], list[float], float]:
+    """Cluster dots into horizontal rows and estimate the vertical dot pitch."""
+    rows = _cluster_1d(dots, key=lambda d: d.y, threshold=threshold)
+    row_centers = [sum(d.y for d in row) / len(row) for row in rows]
+    row_gaps = [b - a for a, b in zip(row_centers, row_centers[1:])]
+    u_v = _estimate_unit(row_gaps, fallback=fallback_unit)
+    return rows, row_centers, u_v
+
+
+def _estimate_residual_skew(rows: list[list[Dot]], u_v: float) -> float:
+    """Median least-squares slope (dy/dx) across rows with 3+ dots.
+
+    A perfectly level page gives slope 0; a mildly tilted photograph gives a
+    consistent small slope on every row. Rows with fewer than 3 dots carry
+    too little signal and are ignored — as are rows whose vertical spread
+    exceeds a dot pitch: those are *merged* row clusters (several physical
+    dot rows chained together), and a regression through them measures the
+    text pattern, not the page tilt.
+    """
+    slopes: list[float] = []
+    for row in rows:
+        if len(row) < 3:
+            continue
+        ys = [d.y for d in row]
+        if max(ys) - min(ys) > 0.8 * u_v:
+            continue
+        xs = [d.x for d in row]
+        n = len(xs)
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        denom = sum((x - mean_x) ** 2 for x in xs)
+        if denom < 1e-6:
+            continue
+        slopes.append(sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom)
+    return median(slopes) if slopes else 0.0
+
+
+def _max_row_spread(rows: list[list[Dot]]) -> float:
+    return max(max(d.y for d in row) - min(d.y for d in row) for row in rows)
+
+
+# Shear-correct when the measured tilt is between ~0.25 and ~10 degrees:
+# below that it is measurement noise, above it the page is unusable anyway.
+_SKEW_MIN_SLOPE = 0.004
+_SKEW_MAX_SLOPE = 0.18
+
+
 def group_dots(dots: list[Dot]) -> GroupingResult:
     if not dots:
         return GroupingResult(
@@ -122,12 +185,105 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
     flags: list[Flag] = []
     r_med = median(d.r for d in dots)
     cluster_threshold = max(2.0, 1.5 * r_med)
+    fallback_unit = 3.0 * r_med
 
     # --- Vertical structure: dot rows, then Braille lines -------------------
-    rows = _cluster_1d(dots, key=lambda d: d.y, threshold=cluster_threshold)
-    row_centers = [sum(d.y for d in row) / len(row) for row in rows]
-    row_gaps = [b - a for a, b in zip(row_centers, row_centers[1:])]
-    u_v = _estimate_unit(row_gaps, fallback=3.0 * r_med)
+    rows, row_centers, u_v = _row_structure(dots, cluster_threshold, fallback_unit)
+
+    # Residual skew correction from the dot geometry itself (Stage 3D-D).
+    slope = _estimate_residual_skew(rows, u_v)
+    if _SKEW_MIN_SLOPE < abs(slope) <= _SKEW_MAX_SLOPE:
+        dots = [replace(d, y=d.y - slope * d.x) for d in dots]
+        rows, row_centers, u_v = _row_structure(dots, cluster_threshold, fallback_unit)
+        if abs(slope) > 0.05:  # ~3 degrees: correction applied but worth flagging
+            flags.append(
+                make_flag(
+                    text="",
+                    reason=(
+                        "The page appears noticeably tilted; line order was "
+                        "reconstructed after skew correction and should be "
+                        "checked."
+                    ),
+                    category=CATEGORY_LINE_ORDER_UNCERTAINTY,
+                    severity="low",
+                )
+            )
+
+    # Re-cluster rows with a threshold derived from the measured dot pitch
+    # when it differs materially from the radius-based first guess (tight or
+    # wide dot spacing).
+    # (row_threshold diverges from cluster_threshold here: columns keep the
+    # radius-based threshold — x jitter is unaffected by row problems.)
+    row_threshold = cluster_threshold
+    refined_threshold = max(2.0, 0.45 * u_v)
+    ratio = refined_threshold / row_threshold
+    if ratio < 0.8 or ratio > 1.25:
+        rows, row_centers, u_v = _row_structure(dots, refined_threshold, fallback_unit)
+        row_threshold = refined_threshold
+
+    # Row-collapse rescue: a single physical dot row is vertically tight —
+    # it can never span most of a dot pitch. When jittery dot centres (e.g.
+    # crescents from a tightly spaced embossed page) chain neighbouring rows
+    # into one cluster, re-cluster with a tighter threshold. A retry that
+    # fragments rows down to jitter scale (u_v collapsing towards the dot
+    # radius) is rejected: that means the rows are genuinely inseparable.
+    collapse_retries = 0
+    while (
+        _max_row_spread(rows) > 0.8 * u_v
+        and collapse_retries < 2
+        and row_threshold > 2.0
+    ):
+        row_threshold = max(2.0, 0.5 * row_threshold)
+        retry = _row_structure(dots, row_threshold, fallback_unit)
+        collapse_retries += 1
+        if retry[2] < 1.8 * r_med:
+            break
+        rows, row_centers, u_v = retry
+
+    if _max_row_spread(rows) > 0.8 * u_v:
+        # Rows remain merged: any dot-to-slot assignment would be a guess.
+        # Fail safely — empty result, honest flags — rather than emit
+        # confidently-wrong text for a specialist to untangle.
+        return GroupingResult(
+            flags=dedupe_flags(
+                flags
+                + [
+                    make_flag(
+                        text="",
+                        reason=(
+                            "Braille dot rows could not be separated reliably "
+                            "(dots too tightly spaced or too blurred for this "
+                            "image resolution); no draft could be produced."
+                        ),
+                        category=CATEGORY_LINE_ORDER_UNCERTAINTY,
+                        severity="high",
+                    ),
+                    make_flag(
+                        text="",
+                        reason=(
+                            "Try a higher-resolution, flatter photograph with "
+                            "the Braille area filling more of the frame."
+                        ),
+                        category=CATEGORY_LOW_IMAGE_QUALITY,
+                        severity="medium",
+                    ),
+                ]
+            )
+        )
+
+    if collapse_retries:
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "Detected dot rows overlapped and had to be re-clustered "
+                    "with a tighter threshold; row and line structure is "
+                    "uncertain."
+                ),
+                category=CATEGORY_LINE_ORDER_UNCERTAINTY,
+                severity="medium",
+            )
+        )
 
     line_groups: list[list[int]] = [[0]]
     for i in range(1, len(rows)):
@@ -137,7 +293,9 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
             line_groups[-1].append(i)
 
     # --- Assign row indices (0-2) within each line, collect columns ---------
-    line_quality = 1.0
+    # A collapse rescue means the row structure was ambiguous: line quality
+    # starts below 1 so the final confidence reflects that uncertainty.
+    line_quality = 1.0 - 0.15 * collapse_retries
     per_line: list[list[tuple[Dot, int]]] = []  # (dot, row_index_in_cell)
     for group in line_groups:
         y0 = row_centers[group[0]]
@@ -175,8 +333,16 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
     # prefer measured gaps near u_v, fall back to u_v itself.
     band = [g for g in all_col_gaps if 0.7 * u_v <= g <= 1.4 * u_v]
     u_h = median(band) if band else u_v
-    advance_band = [g for g in all_col_gaps if 1.2 * u_h < g <= 3.0 * u_h]
-    advance = (median(advance_band) + u_h) if advance_band else 2.5 * u_h
+    # The cell advance appears in the gap data as two distinct populations:
+    # column-2 -> column-1 gaps of ~(advance - u_h), and full-advance gaps
+    # where a cell only has one occupied column. Mixing them in one median
+    # biases the advance, and even a small bias accumulates into wrong cell
+    # assignments by the end of a long line — so normalise each population
+    # to "advance" before taking the median.
+    advance_estimates = [
+        g + u_h for g in all_col_gaps if 1.2 * u_h < g <= 2.0 * u_h
+    ] + [g for g in all_col_gaps if 2.0 * u_h < g <= 3.0 * u_h]
+    advance = median(advance_estimates) if advance_estimates else 2.5 * u_h
 
     # --- Grid assignment -----------------------------------------------------
     lines_out: list[list[CellCandidate]] = []

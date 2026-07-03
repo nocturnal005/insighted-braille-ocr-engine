@@ -1,4 +1,4 @@
-# Limitations — insighted-braille-ocr-engine v0.1.0
+# Limitations — insighted-braille-ocr-engine v0.2.0
 
 ## Draft-only output (the most important limitation)
 
@@ -33,16 +33,32 @@ verification.
 
 ## Image assumptions
 
-- The dot detector targets **clear, dark, roughly circular dots on a light
-  background** — scans of printed Braille diagrams, inkprint-style renders,
-  or the bundled synthetic samples.
-- **Photographs of embossed Braille paper are not yet reliable.** Embossed
-  dots appear as low-contrast shadow/highlight pairs, not dark dots. Such
-  images will usually produce empty or heavily flagged output. This is the
-  main planned area of future work.
+- The dot detector handles two input styles: **clear, dark, roughly circular
+  dots on a light background** (scans of printed Braille diagrams,
+  inkprint-style renders, the bundled synthetic samples), and — since
+  Stage 3D-D — **embossed-paper-style photographs** where each raised dot
+  appears as a highlight/shadow crescent pair under directional light.
+- **Embossed-photo support is simulation-validated, not field-validated.**
+  The embossed path decodes all 12 bundled synthetic embossed samples (low
+  contrast, shadows, mild skew, paper noise, uneven illumination, wide/tight
+  spacing, faint dots, rotation) at CER 0.000, but those simulations are
+  cleaner than real photographs of real embossed pages. Expect real-world
+  accuracy to be lower, confidence to be capped at 0.82, and heavier
+  flagging. Real embossed photograph collection and validation (with proper
+  permissions, never live pupil work) remains future work.
+- Embossed detection needs **mild directional light** — perfectly flat,
+  shadowless lighting leaves raised dots invisible to the camera, and very
+  harsh light crushes one side of the pair. Either case degrades to empty or
+  heavily flagged output rather than a crash.
+- **Resolution floor:** dots must be roughly 6 pixels across or larger, and
+  dot rows must be separable. Below that (e.g. tightly spaced Braille in a
+  low-resolution photo) the engine deliberately returns an **empty draft
+  with a high-severity flag** instead of guessing.
 - The grid fitter assumes a **reasonably regular Braille layout** (consistent
   dot pitch and cell spacing) with limited skew (small rotations are
-  deskewed; heavy skew, curvature, or perspective distortion are not).
+  deskewed at image level, and residual tilt up to ~10° is corrected from
+  the dot geometry; heavy skew, page curvature, or perspective distortion
+  are not).
 - Rare layouts can shift the grid anchor: a line whose cells contain **no
   top-row dots at all**, or a line consisting only of right-column patterns,
   may be decoded with a row/column offset. Such lines are usually accompanied
@@ -52,11 +68,14 @@ verification.
 
 ## Quality and evaluation
 
-- The bundled samples are **synthetic best-case images**; evaluation numbers
-  on them demonstrate that the geometric pipeline round-trips correctly, not
-  that the engine performs well on real pupil work.
-- Character Error Rate on real-world images should be expected to be high in
-  v1 until dedicated embossed-dot detection is added.
+- The bundled samples are **synthetic images** (ideal renders plus
+  embossed-photo simulations); evaluation numbers on them demonstrate that
+  the geometric pipeline round-trips correctly under simulated conditions,
+  not that the engine performs well on real pupil work.
+- Character Error Rate on real-world embossed photographs should still be
+  expected to be substantially higher than on the simulations; confidence
+  and flags are calibrated to say so (embossed runs cap at 0.82, fallback
+  translation at 0.95).
 - Do not put pupil-identifying information in sample file names or ground
   truth files — file names appear in evaluation output.
 
@@ -73,11 +92,15 @@ verification.
   network-level controls, which are out of scope for v1.
 - Images are processed in memory and are not persisted by the engine.
 
-## Not in version 1 (future work)
+## Future work
 
-- Embossed-dot photograph detection (shadow/highlight pair modelling).
+- ~~Embossed-dot photograph detection (shadow/highlight pair modelling).~~
+  Added in v0.2.0 (Stage 3D-D) — validated on synthetic simulations only;
+  validation on real embossed photographs (with permissions, anonymised)
+  is the next step.
 - PDF intake and multi-page handling.
 - Grade 2 (contracted) UEB awareness in the fallback translator.
 - Confidence calibration against ground-truth error rates.
 - Word-level flags anchored to text spans (`flags[].text` is currently empty
   for whole-image flags and holds a single cell/letter for cell-level flags).
+- Interpoint (double-sided) embossed pages.
