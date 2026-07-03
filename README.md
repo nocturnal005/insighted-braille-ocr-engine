@@ -215,6 +215,10 @@ flag-category summary, confidence-vs-error summary):
 python -m app.evaluation.run_evaluation --dataset original
 python -m app.evaluation.run_evaluation --dataset embossed
 
+# local-only real anonymised photographs (Stage 3D-E; see below)
+python -m app.evaluation.audit_dataset --dataset real_anonymised
+python -m app.evaluation.run_evaluation --dataset real_anonymised
+
 # or explicit directories (unchanged)
 python -m app.evaluation.run_evaluation --images ./samples/images --truth ./samples/ground_truth
 python -m app.evaluation.run_evaluation --images ./samples/embossed_images --truth ./samples/embossed_ground_truth
@@ -244,6 +248,54 @@ This does **not** make the engine production-certified. Output remains
 Braille-literate specialist verification before teacher feedback or
 export. Real photographs of real embossed pages will be harder than the
 simulation — treat flags and confidence as the honest signal they are.
+
+### Real anonymised embossed photograph validation (Stage 3D-E)
+
+Stage 3D-E adds a **local-first validation framework** for real
+photographs/scans. Real samples live in three folders that are
+**gitignored by default** — real photographs, ground truth, and metadata
+never leave the local machine unless a file is explicitly safe and its
+addition deliberately reviewed:
+
+```
+samples/real_anonymised_images/         real_001_clean_flat_good_light.png
+samples/real_anonymised_ground_truth/   real_001_clean_flat_good_light.txt
+samples/real_anonymised_metadata/       real_001_clean_flat_good_light.json
+```
+
+Preparation rules (full protocol in
+[`docs/real_photo_validation_protocol.md`](docs/real_photo_validation_protocol.md)):
+Braille-only crops with any print transcription excluded, no pupil/school
+identifiers in image, ground truth, file name, or metadata notes, EXIF
+stripped, human-verified ground truth, and a per-sample metadata JSON
+recording capture conditions and `permission_status`. Samples marked
+`not_approved` (or with no metadata) are **always skipped**; Grade 2
+samples are reported separately and never counted as a support claim.
+
+Workflow:
+
+```powershell
+python -m app.evaluation.audit_dataset --dataset real_anonymised   # report-only safety/completeness audit
+python -m app.evaluation.run_evaluation --dataset real_anonymised  # metadata-gated evaluation + diagnostics
+```
+
+The evaluation reports per-sample CER/WER/confidence/repeatability (by
+sample id — never file paths, draft text, ground truth, or image data),
+results grouped by lighting/contrast/skew/capture method/Braille type/
+crop quality/dot size, error buckets, a **confidence calibration check**
+that warns when high-error images receive high confidence, failure-mode
+flag counts, and data-driven recommendations. An empty dataset exits
+cleanly — that is the expected state until safe samples are collected.
+
+Interpreting results: CER/WER measure the **correction burden** a
+specialist would face. Synthetic success (both bundled datasets evaluate
+at CER 0.000) does **not** prove real-world accuracy — the real-photo
+numbers are the honest measure, and they are expected to be worse.
+
+> This engine remains a draft OCR tool. Real-photo validation is used to
+> measure usefulness and correction burden; it does not certify Braille
+> accuracy. QTVI/Braille-literate specialist verification remains
+> mandatory in InsightEd AI before teacher feedback or export.
 
 **Image-capture guidance for best results:**
 

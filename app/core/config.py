@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     service_name: str = "insighted-braille-ocr-engine"
-    service_version: str = "0.2.0"
+    service_version: str = "0.3.0"
     api_version: str = "v1"
     draft_warning: str = DRAFT_ONLY_WARNING
 

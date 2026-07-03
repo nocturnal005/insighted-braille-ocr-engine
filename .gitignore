@@ -4,3 +4,14 @@ __pycache__/
 .pytest_cache/
 .env
 *.egg-info/
+
+# Real anonymised validation samples are LOCAL-ONLY by default. Never commit
+# real photographs, ground truth, or metadata unless a file is explicitly
+# safe, anonymised, and approved for repository use (see
+# docs/real_photo_validation_protocol.md).
+samples/real_anonymised_images/*
+samples/real_anonymised_ground_truth/*
+samples/real_anonymised_metadata/*
+!samples/real_anonymised_images/.gitkeep
+!samples/real_anonymised_ground_truth/.gitkeep
+!samples/real_anonymised_metadata/.gitkeep

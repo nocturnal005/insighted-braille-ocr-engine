@@ -1,4 +1,4 @@
-# Limitations — insighted-braille-ocr-engine v0.2.0
+# Limitations — insighted-braille-ocr-engine v0.3.0
 
 ## Draft-only output (the most important limitation)
 
@@ -76,6 +76,13 @@ verification.
   expected to be substantially higher than on the simulations; confidence
   and flags are calibrated to say so (embossed runs cap at 0.82, fallback
   translation at 0.95).
+- **Real-photo validation (Stage 3D-E) is a framework, not a result.** The
+  `real_anonymised` dataset is local-only and gitignored; no real
+  photographs have been evaluated in this repository yet. Until safe,
+  anonymised, approved samples are collected and measured, the engine's
+  real-world accuracy is **unknown** — do not extrapolate from the
+  synthetic CER 0.000 figures. Real-photo validation measures usefulness
+  and correction burden; it does not certify Braille accuracy.
 - Do not put pupil-identifying information in sample file names or ground
   truth files — file names appear in evaluation output.
 
