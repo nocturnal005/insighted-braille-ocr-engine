@@ -2,10 +2,14 @@
 
 Usage:
     python -m app.evaluation.run_evaluation --images ./samples/images --truth ./samples/ground_truth
+    python -m app.evaluation.run_evaluation --dataset embossed
+    python -m app.evaluation.run_evaluation --dataset original
 
 For each image with a matching <stem>.txt ground-truth file, runs the OCR
 pipeline and reports CER, WER, repeatability across runs, processing time,
-failure count, and a confidence-vs-error summary.
+failure count, a flag-category summary, and a confidence-vs-error summary.
+`--dataset` is shorthand for the bundled sample directories; explicit
+`--images`/`--truth` paths keep working unchanged.
 
 Prints metrics only — never transcription text or image data.
 """
@@ -14,8 +18,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 from pathlib import Path
 from time import perf_counter
+
+DATASETS = {
+    "original": ("./samples/images", "./samples/ground_truth"),
+    "embossed": ("./samples/embossed_images", "./samples/embossed_ground_truth"),
+}
 
 from app.evaluation.metrics import (
     character_error_rate,
@@ -46,15 +56,29 @@ def _build_request(path: Path, mime: str) -> OcrRequest:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--images", required=True, help="Directory of sample images")
-    parser.add_argument("--truth", required=True, help="Directory of .txt ground-truth files")
+    parser.add_argument("--images", help="Directory of sample images")
+    parser.add_argument("--truth", help="Directory of .txt ground-truth files")
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(DATASETS),
+        help="Bundled dataset shorthand (alternative to --images/--truth)",
+    )
     parser.add_argument(
         "--runs", type=int, default=3, help="Runs per image for repeatability (default 3)"
     )
     args = parser.parse_args(argv)
 
-    images_dir = Path(args.images)
-    truth_dir = Path(args.truth)
+    if args.dataset:
+        default_images, default_truth = DATASETS[args.dataset]
+        images = args.images or default_images
+        truth = args.truth or default_truth
+    elif args.images and args.truth:
+        images, truth = args.images, args.truth
+    else:
+        parser.error("provide --dataset, or both --images and --truth")
+
+    images_dir = Path(images)
+    truth_dir = Path(truth)
     if not images_dir.is_dir():
         print(f"images directory not found: {images_dir}")
         return 1
@@ -72,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict] = []
     failed_images = 0
     skipped = 0
+    flag_categories: Counter[str] = Counter()
 
     for path in image_paths:
         truth_path = truth_dir / f"{path.stem}.txt"
@@ -88,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         confidence = 0.0
         flag_count = 0
         errored = False
-        for _ in range(max(1, args.runs)):
+        for run_index in range(max(1, args.runs)):
             started = perf_counter()
             try:
                 response = run_ocr(request)
@@ -99,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             outputs.append(normalise_text(response.draftText))
             confidence = response.confidence
             flag_count = len(response.flags)
+            if run_index == 0:
+                flag_categories.update({f.category for f in response.flags})
 
         if errored or (not outputs[0] and reference):
             failed_images += 1
@@ -138,6 +165,12 @@ def main(argv: list[str] | None = None) -> int:
         f"mean_confidence={mean('confidence'):.3f} "
         f"mean_repeatability={mean('repeatability'):.3f} mean_ms={mean('ms'):.1f}"
     )
+
+    if flag_categories:
+        summary = " ".join(
+            f"{category}={count}" for category, count in flag_categories.most_common()
+        )
+        print(f"flag categories (images raising each): {summary}")
 
     low_error = [r for r in results if r["cer"] <= 0.10]
     high_error = [r for r in results if r["cer"] > 0.10]
