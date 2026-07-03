@@ -1,0 +1,19 @@
+# TEMPLATE - DELETE EVERYTHING IN THIS FILE (including these lines) BEFORE USE.
+#
+# The real ground-truth file must contain ONLY the exact verified text that a
+# Braille-literate reader reads from the sample image. Nothing else.
+#
+# Rules:
+# - UTF-8 plain text.
+# - Line breaks must match the Braille lines in the image, one text line per
+#   Braille line.
+# - Fully anonymised: no pupil names, school names, teacher names, assessment
+#   titles, dates of birth, emails, or any other identifying detail.
+# - No comments, headers, labels, or notes - the file is compared
+#   character-for-character against OCR output.
+# - Save as <stem>.txt where <stem> matches the image file name exactly
+#   (e.g. real_001_clean_flat_good_light.txt).
+#
+# Replace this entire file with the verified transcription text.
+
+(verified transcription text goes here - replace this placeholder)

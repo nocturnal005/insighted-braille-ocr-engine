@@ -15,3 +15,7 @@ samples/real_anonymised_metadata/*
 !samples/real_anonymised_images/.gitkeep
 !samples/real_anonymised_ground_truth/.gitkeep
 !samples/real_anonymised_metadata/.gitkeep
+
+# Real-photo baseline evaluation reports are LOCAL-ONLY by default: they can
+# contain real sample ids and capture metadata.
+reports/

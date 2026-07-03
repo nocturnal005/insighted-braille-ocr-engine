@@ -270,6 +270,121 @@ def test_real_evaluation_masks_unsafe_sample_names(dataset_dirs, capsys):
     assert "(id withheld" in out
 
 
+# --- Baseline report writing (--write-report) ---------------------------------------
+
+
+def test_write_report_creates_sanitized_json(dataset_dirs, tmp_path, capsys):
+    add_sample(dataset_dirs, "real_001_good_light")
+    add_sample(
+        dataset_dirs,
+        "real_002_low_light",
+        text="reading by touch",
+        style=EmbossedStyle(relief=10.0),
+        metadata=dict(GOOD_METADATA, lighting="low_light", contrast="low"),
+    )
+    report_path = tmp_path / "reports" / "baseline.json"
+    code = eval_main(
+        [
+            "--dataset", "real_anonymised", "--runs", "1",
+            "--write-report", str(report_path), *dir_args(dataset_dirs),
+        ]
+    )
+    assert code == 0
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    # top-level summary fields
+    assert report["schema_version"] == "1.0"
+    assert report["engine_version"]
+    assert report["generated_at"]
+    assert report["dataset"] == "real_anonymised"
+    assert report["counts"] == {
+        "samples": 2, "evaluated": 2, "skipped": 0, "failed": 0,
+    }
+    for key in (
+        "mean_cer", "median_cer", "mean_wer", "median_wer",
+        "mean_confidence", "mean_repeatability", "mean_ms",
+    ):
+        assert key in report["summary"]
+    assert set(report["error_buckets"]) == {"low", "medium", "high", "failed"}
+    assert report["calibration"]
+    assert "lighting" in report["groups"] and "dot_size" in report["groups"]
+    assert report["groups"]["lighting"]["low_light"]["n"] == 1
+    assert isinstance(report["flag_categories"], list)
+    assert report["recommendations"]
+    assert "mandatory" in report["note"] and "Draft-only" in report["note"]
+
+    # per-sample entries: safe labels + metrics only, nothing else
+    labels = [entry["label"] for entry in report["samples"]]
+    assert sorted(labels) == ["real_001_good_light", "real_002_low_light"]
+    for entry in report["samples"]:
+        assert set(entry) == {
+            "label", "cer", "wer", "confidence", "repeatability",
+            "ms", "bucket", "flag_categories",
+        }
+        assert entry["bucket"] in {"low", "medium", "high", "failed"}
+        assert entry["flag_categories"] == sorted(entry["flag_categories"])
+
+    # single confirmation line with the report path; existing output intact
+    out = capsys.readouterr().out
+    assert "baseline report written" in out
+    assert str(report_path) in out
+    assert "diagnostic summary" in out
+
+
+def test_write_report_contains_no_text_or_image_data(dataset_dirs, tmp_path):
+    secret_text = "the cat sat on the mat"
+    add_sample(dataset_dirs, "real_001_good_light", text=secret_text)
+    add_sample(dataset_dirs, "real_002_touch", text="reading by touch")
+    report_path = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "--dataset", "real_anonymised", "--runs", "1",
+            "--write-report", str(report_path), *dir_args(dataset_dirs),
+        ]
+    )
+    assert code == 0
+    raw = report_path.read_text(encoding="utf-8")
+    # never ground truth / draft text, base64, or image data
+    assert secret_text not in raw
+    assert "reading by touch" not in raw
+    assert "base64" not in raw and "data:image" not in raw
+
+
+def test_write_report_masks_unsafe_sample_names(dataset_dirs, tmp_path):
+    add_sample(dataset_dirs, "pupil_page_photo")
+    report_path = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "--dataset", "real_anonymised", "--runs", "1",
+            "--write-report", str(report_path), *dir_args(dataset_dirs),
+        ]
+    )
+    assert code == 0
+    raw = report_path.read_text(encoding="utf-8")
+    assert "pupil_page_photo" not in raw
+    assert "(id withheld" in raw
+
+
+def test_write_report_empty_dataset_writes_minimal_report(dataset_dirs, tmp_path, capsys):
+    report_path = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "--dataset", "real_anonymised", "--runs", "1",
+            "--write-report", str(report_path), *dir_args(dataset_dirs),
+        ]
+    )
+    assert code == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["counts"] == {
+        "samples": 0, "evaluated": 0, "skipped": 0, "failed": 0,
+    }
+    assert "mandatory" in report["note"]
+    out = capsys.readouterr().out
+    assert "minimal baseline report" in out
+    assert "baseline report written" in out
+
+
 # --- Diagnostics helpers -----------------------------------------------------------
 
 
