@@ -26,8 +26,15 @@ from app.ocr.confidence import (
     EMBOSS_MODE_CAP,
     FALLBACK_TRANSLATION_CAP,
     combined_confidence,
+    dot_size_cap,
+    noise_ratio_factor,
 )
-from app.ocr.dot_detection import DetectionOutcome, detect_variant, selection_flags
+from app.ocr.dot_detection import (
+    DetectionOutcome,
+    detect_variant,
+    selection_flags,
+    strict_variant,
+)
 from app.ocr.flags import (
     CATEGORY_LOW_IMAGE_QUALITY,
     CATEGORY_LOW_OCR_CONFIDENCE,
@@ -62,9 +69,18 @@ def _select_variant(variants) -> tuple[DetectionOutcome, GroupingResult]:
     Strict `>` keeps the first (dark) variant on ties, preserving the
     original behaviour for clean scans.
     """
+    detections = [detect_variant(variant) for variant in variants]
+    # Stage 3D-G2: on pages with evidence of noise (size filter rejected
+    # extra marks), also offer a strict candidate with low-confidence dots
+    # dropped. Specks that slip the size gate score poorly on circularity /
+    # size consistency; removing them lets the true grid win the same
+    # grid-fit scoring below, instead of the noise garbling cell grouping.
+    detections.extend(
+        strict for strict in (strict_variant(d) for d in list(detections))
+        if strict is not None
+    )
     candidates: list[tuple[DetectionOutcome, GroupingResult]] = [
-        (detection, group_dots(detection.dots))
-        for detection in (detect_variant(variant) for variant in variants)
+        (detection, group_dots(detection.dots)) for detection in detections
     ]
     max_dots = max((len(d.dots) for d, _ in candidates), default=0)
 
@@ -268,10 +284,24 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
             spacing_regularity=detection.spacing_regularity,
         )
 
-        # Honesty caps (see confidence.py): embossed-photo relief detection
-        # and non-Liblouis translation must never read as near-certainty.
+        # Honesty caps (see confidence.py): embossed-photo relief detection,
+        # noise and near-floor dot sizes (dark path only - emboss discs are
+        # painted reconstructions, so their raw/accepted ratio and radius
+        # reflect the pairing step, not capture quality; emboss has its own
+        # cap), and non-Liblouis translation must never read as
+        # near-certainty.
         if detection.mode == MODE_EMBOSS:
             confidence = min(confidence, EMBOSS_MODE_CAP)
+        else:
+            # A page where many candidate marks were rejected as non-dots is
+            # less trustworthy even when it decodes (Stage 3D-G2).
+            confidence = round(
+                confidence * noise_ratio_factor(len(dots), detection.raw_candidates),
+                3,
+            )
+            size_cap = dot_size_cap(detection.median_radius)
+            if size_cap is not None:
+                confidence = min(confidence, size_cap)
         if not used_liblouis:
             confidence = min(confidence, FALLBACK_TRANSLATION_CAP)
 

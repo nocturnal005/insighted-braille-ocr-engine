@@ -27,6 +27,41 @@ _WEIGHTS = {
 EMBOSS_MODE_CAP = 0.82
 FALLBACK_TRANSLATION_CAP = 0.95
 
+# Dot-size honesty (Stage 3D-G2): decoding degrades sharply as dots approach
+# the ~6 px readable floor, but none of the blend factors senses absolute
+# scale (small dots are still round and evenly spaced), so near-floor pages
+# used to keep clean-scan confidence despite elevated error. The cap applies
+# to measured dark-path dot radii only - emboss-mode discs are reconstructions
+# painted at a synthetic radius, which says nothing about capture resolution.
+DOT_FLOOR_RADIUS_PX = 3.2  # ~6.4 px dot diameter: caps start here
+DOT_FLOOR_MIN_RADIUS_PX = 2.0  # at/below this the cap bottoms out
+DOT_FLOOR_CAP_RANGE = (0.50, 0.80)  # cap at min radius .. cap at floor radius
+
+# Noise honesty (Stage 3D-G2): when the size filter rejected many candidate
+# marks, the page is noisy and surviving dots are less trustworthy even if
+# they decode; scale confidence by the accepted/raw ratio's headroom.
+NOISE_RATIO_CLEAN = 0.90  # accepted/raw at or above this: no penalty
+
+
+def dot_size_cap(median_radius: float) -> float | None:
+    """Confidence cap for near-floor dot sizes; None when dots are large enough."""
+    if median_radius <= 0 or median_radius >= DOT_FLOOR_RADIUS_PX:
+        return None
+    low_cap, high_cap = DOT_FLOOR_CAP_RANGE
+    span = DOT_FLOOR_RADIUS_PX - DOT_FLOOR_MIN_RADIUS_PX
+    position = (median_radius - DOT_FLOOR_MIN_RADIUS_PX) / span
+    return round(low_cap + (high_cap - low_cap) * min(max(position, 0.0), 1.0), 3)
+
+
+def noise_ratio_factor(accepted: int, raw_candidates: int) -> float:
+    """Multiplicative confidence factor in (0, 1] for noisy pages."""
+    if accepted <= 0 or raw_candidates <= accepted:
+        return 1.0
+    ratio = accepted / raw_candidates
+    if ratio >= NOISE_RATIO_CLEAN:
+        return 1.0
+    return round(max(0.6, 0.5 + 0.5 * ratio), 3)
+
 
 def combined_confidence(
     *,
