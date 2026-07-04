@@ -52,7 +52,16 @@ class DetectionOutcome:
     image_quality: float = 0.0  # quality score of the winning variant
     spacing_regularity: float = 0.0  # nearest-neighbour regularity in [0, 1]
     raw_candidates: int = 0  # contour candidates before size filtering
+    median_radius: float = 0.0  # median accepted dot radius in px (0 = none)
+    noise_filtered: bool = False  # True when low-confidence dots were dropped
     flags: list[Flag] = field(default_factory=list)
+
+
+# Per-dot confidence below which a candidate is dropped in the strict retry
+# pass (Stage 3D-G2). On noisy pages the true dots score ~1.0 while specks
+# that slipped the size gate score lower on circularity/size consistency, so
+# this threshold separates them cleanly; on clean pages nothing is removed.
+STRICT_DOT_CONFIDENCE = 0.85
 
 
 def detect_dots(
@@ -136,6 +145,10 @@ def spacing_regularity(dots: list[Dot]) -> float:
     return float(np.clip(1.0 - cv_value, 0.0, 1.0))
 
 
+def _median_radius(dots: list[Dot]) -> float:
+    return float(median(d.r for d in dots)) if dots else 0.0
+
+
 def detect_variant(variant: BinaryVariant) -> DetectionOutcome:
     """Run dot detection on one preprocessing variant."""
     dots, quality, raw_candidates = _detect(
@@ -148,6 +161,34 @@ def detect_variant(variant: BinaryVariant) -> DetectionOutcome:
         image_quality=variant.quality,
         spacing_regularity=spacing_regularity(dots),
         raw_candidates=raw_candidates,
+        median_radius=_median_radius(dots),
+    )
+
+
+def strict_variant(outcome: DetectionOutcome) -> DetectionOutcome | None:
+    """A stricter candidate with low-confidence dots dropped, or None.
+
+    Only offered when the size filter already rejected extra marks
+    (raw_candidates > accepted dots - independent evidence of a noisy page)
+    and the strict subset actually removes something while keeping enough
+    dots to form cells. Variant selection scores it like any other
+    candidate, so it only wins when the filtered dots form a clearly better
+    Braille grid; clean pages are never affected because nothing is removed.
+    """
+    if outcome.raw_candidates <= len(outcome.dots):
+        return None
+    strict = [d for d in outcome.dots if d.confidence >= STRICT_DOT_CONFIDENCE]
+    if len(strict) < 6 or len(strict) == len(outcome.dots):
+        return None
+    return DetectionOutcome(
+        dots=strict,
+        quality=float(sum(d.confidence for d in strict) / len(strict)),
+        mode=outcome.mode,
+        image_quality=outcome.image_quality,
+        spacing_regularity=spacing_regularity(strict),
+        raw_candidates=outcome.raw_candidates,
+        median_radius=_median_radius(strict),
+        noise_filtered=True,
     )
 
 
@@ -182,6 +223,48 @@ def selection_flags(outcome: DetectionOutcome) -> list[Flag]:
                 ),
                 category=CATEGORY_LOW_IMAGE_QUALITY,
                 severity="medium",
+            )
+        )
+    elif outcome.dots and outcome.raw_candidates > 1.15 * len(outcome.dots):
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "Background noise or stray marks were detected alongside "
+                    "the Braille dots; check the draft against the original."
+                ),
+                category=CATEGORY_LOW_IMAGE_QUALITY,
+                severity="low",
+            )
+        )
+    if outcome.noise_filtered:
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "Some detected marks were rejected as probable noise "
+                    "before decoding; a real dot may have been discarded "
+                    "with them, so verify the draft carefully."
+                ),
+                category=CATEGORY_UNCLEAR_BRAILLE_CELL,
+                severity="medium",
+            )
+        )
+    if (
+        outcome.dots
+        and outcome.mode == MODE_DARK
+        and 0 < outcome.median_radius < 3.2
+    ):
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "Braille dots are near or below the reliable size floor "
+                    "(about 6 pixels across); misread cells are likely. "
+                    "Recapture at higher resolution if possible."
+                ),
+                category=CATEGORY_LOW_IMAGE_QUALITY,
+                severity="high" if outcome.median_radius < 2.4 else "medium",
             )
         )
     if len(outcome.dots) >= 4 and outcome.spacing_regularity < 0.55:

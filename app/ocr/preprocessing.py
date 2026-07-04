@@ -279,6 +279,11 @@ def _emboss_binary(gray: np.ndarray) -> np.ndarray:
 
 def preprocess(gray: np.ndarray) -> PreprocessResult:
     # --- Dark-dot path (original behaviour, unchanged) ----------------------
+    # Note (Stage 3D-G2): a post-threshold speckle opening was trialled here
+    # and rejected - erosion+dilation rounds surviving noise clusters, so
+    # MORE of them pass the downstream circularity gate and safe failures
+    # turned into confidently-wrong drafts. Noise is handled at the dot
+    # filtering / confidence level instead.
     denoised = cv2.medianBlur(gray, 3)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(denoised)
