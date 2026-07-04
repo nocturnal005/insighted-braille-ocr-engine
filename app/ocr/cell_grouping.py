@@ -163,6 +163,54 @@ def _max_row_spread(rows: list[list[Dot]]) -> float:
     return max(max(d.y for d in row) - min(d.y for d in row) for row in rows)
 
 
+def _line_lifts(
+    line_groups: list[list[int]], row_centers: list[float], u_v: float
+) -> list[int]:
+    """Rows (0-2) each line's topmost cluster sits *below* its true origin.
+
+    Anchoring each line's topmost detected row cluster as physical row 0 fails
+    when a whole line uses only the middle/lower rows (e.g. a line of comma
+    cells): the line is read one row too high. This locates each line's origin
+    on the page's regular line ladder instead, using a reference line that
+    provably contains all three physical rows (three clusters spanning ~two dot
+    pitches, so its topmost cluster is certainly row 0). A line whose topmost
+    cluster falls a whole dot pitch or more below its predicted origin is
+    lifted by that many rows.
+
+    Returns all zeros — a no-op — whenever the ladder cannot be trusted (too
+    few lines, no regular pitch, or no full-height reference line). Lines that
+    already carry a row-0 dot sit on the ladder and get lift 0, so pages
+    without single-row lines (clean scans, embossed samples, Grade 1) are
+    unaffected.
+    """
+    lifts = [0] * len(line_groups)
+    if len(line_groups) < 3:
+        return lifts
+    tops = [row_centers[group[0]] for group in line_groups]
+    gaps = [b - a for a, b in zip(tops, tops[1:])]
+    plausible = [g for g in gaps if 2.4 * u_v <= g <= 8.0 * u_v]
+    if not plausible:
+        return lifts
+    line_pitch = median(plausible)
+    if not (3.5 <= line_pitch / u_v <= 6.5):  # standard Braille interline
+        return lifts
+
+    reference = None
+    for index, group in enumerate(line_groups):
+        span = row_centers[group[-1]] - row_centers[group[0]]
+        if len(group) >= 3 and span >= 1.6 * u_v:
+            reference = index
+            break
+    if reference is None:
+        return lifts
+
+    for index in range(len(line_groups)):
+        predicted_origin = tops[reference] + (index - reference) * line_pitch
+        lift = round((tops[index] - predicted_origin) / u_v)
+        lifts[index] = min(2, max(0, lift))
+    return lifts
+
+
 # Shear-correct when the measured tilt is between ~0.25 and ~10 degrees:
 # below that it is measurement noise, above it the page is unusable anyway.
 _SKEW_MIN_SLOPE = 0.004
@@ -296,12 +344,29 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
     # A collapse rescue means the row structure was ambiguous: line quality
     # starts below 1 so the final confidence reflects that uncertainty.
     line_quality = 1.0 - 0.15 * collapse_retries
+    # Anchor each line to the page line ladder so a line that uses only the
+    # middle/lower rows (e.g. all comma cells) is not read one row too high.
+    lifts = _line_lifts(line_groups, row_centers, u_v)
+    if any(lifts):
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "One or more Braille lines use only the lower rows of the "
+                    "cell; their row position was inferred from the page line "
+                    "spacing and should be checked."
+                ),
+                category=CATEGORY_UNCLEAR_BRAILLE_CELL,
+                severity="low",
+            )
+        )
     per_line: list[list[tuple[Dot, int]]] = []  # (dot, row_index_in_cell)
-    for group in line_groups:
+    for group_index, group in enumerate(line_groups):
         y0 = row_centers[group[0]]
+        lift = lifts[group_index]
         line_dots: list[tuple[Dot, int]] = []
         for row_i in group:
-            row_index = int(round((row_centers[row_i] - y0) / u_v))
+            row_index = int(round((row_centers[row_i] - y0) / u_v)) + lift
             if row_index > 2:
                 line_quality = max(0.0, line_quality - 0.2)
                 flags.append(
