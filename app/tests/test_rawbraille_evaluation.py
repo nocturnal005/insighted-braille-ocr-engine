@@ -148,10 +148,14 @@ def test_report_excludes_all_braille_text():
             "failed": False,
             "category": "prose",
             "variant": "clean",
+            "capture_type": "controlled_render",
             "label": "sample_x",
         }
     )
-    report = _build_report([row], samples=1, skipped=0)
+    # Stage 3D-G5: reports carry a dataset descriptor + run id.
+    from app.evaluation.rawbraille_dataset import get_spec
+
+    report = _build_report(get_spec("ukaaf_grade2_raw"), [row], 1, 0, "run-test")
     blob = json.dumps(report)
     # No Unicode Braille glyph may appear anywhere in the report.
     assert not any("⠀" <= ch <= "⣿" for ch in blob)

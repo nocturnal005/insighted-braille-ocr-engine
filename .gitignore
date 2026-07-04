@@ -16,6 +16,17 @@ samples/real_anonymised_metadata/*
 !samples/real_anonymised_ground_truth/.gitkeep
 !samples/real_anonymised_metadata/.gitkeep
 
+# Real-capture rawBraille validation samples are LOCAL-ONLY by default
+# (Stage 3D-G5 intake location). Never commit real photographs/scans, expected
+# rawBraille, or metadata unless a file is explicitly safe, anonymised, and
+# approved. Cell-level (rawBraille) evaluation only - no English transcripts.
+samples/real_rawbraille_images/*
+samples/real_rawbraille_expected/*
+samples/real_rawbraille_metadata/*
+!samples/real_rawbraille_images/.gitkeep
+!samples/real_rawbraille_expected/.gitkeep
+!samples/real_rawbraille_metadata/.gitkeep
+
 # Real-photo baseline evaluation reports are LOCAL-ONLY by default: they can
 # contain real sample ids and capture metadata.
 reports/

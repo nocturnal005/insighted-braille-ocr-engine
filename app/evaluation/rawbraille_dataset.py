@@ -1,27 +1,32 @@
-"""Local-only UKAAF Grade 2 rawBraille validation dataset (Stage 3D-G3).
+"""rawBraille validation datasets: controlled renders now, real captures later.
 
-Controlled Braille images rendered locally from UKAAF Grade 2 BRF cells, paired
-with expected ``rawBraille`` decoded from the same BRF (see
-``app/evaluation/braille_ascii.py``). The dataset is used to score the visual
-pipeline at the cell level only - never English draft-text accuracy.
+Stage 3D-G3 introduced a single controlled dataset (UKAAF Grade 2 renders).
+Stage 3D-G5 generalises this to a small registry of dataset *specs* so that
+controlled-render results and future real photographed/scanned captures are
+kept clearly separate and self-describing, and adds a manifest/audit path for
+safe real-capture intake. No dataset here evaluates English text: rawBraille
+validation is cell-level only.
 
-The dataset lives in local-only, gitignored folders (UKAAF source material is
-copyrighted and must never be committed):
+All sample folders are local-only and gitignored (UKAAF source material is
+copyrighted; real captures may be sensitive):
 
-    _external_sources/ukaaf/generated_grade2_rawbraille/images/    *.png
-    _external_sources/ukaaf/generated_grade2_rawbraille/expected/  <stem>.braille
-    _external_sources/ukaaf/generated_grade2_rawbraille/metadata/  <stem>.json
+    controlled (Stage 3D-G3):
+      _external_sources/ukaaf/generated_grade2_rawbraille/{images,expected,metadata}
+    real capture (Stage 3D-G5, intake location; empty until safe samples added):
+      samples/real_rawbraille_images / _expected / _metadata
 
 Gating (mirrors the real-photo dataset's safety stance):
 
 * an image with no matching ``<stem>.braille`` expected file is skipped;
 * ``permission_status`` must be ``approved_for_testing`` (anything else,
   including missing metadata, is skipped - permission must be explicit);
+* ``contains_real_pupil_data`` / ``contains_live_assessment_material`` must be
+  false;
 * file stems are screened for identifying patterns so reports never propagate
   sensitive names.
 
-An empty or missing dataset is the expected state on a fresh checkout (the
-generated files are local-only); callers exit cleanly in that case.
+An empty or missing dataset is the expected state on a fresh checkout; callers
+exit cleanly in that case.
 """
 
 from __future__ import annotations
@@ -30,27 +35,75 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.evaluation.rawbraille_manifest import (
+    CAPTURE_TYPES,
+    GRADE_MODES,
+    SOURCE_TYPES,
+)
 from app.evaluation.real_dataset import unsafe_name_reasons
 
-DATASET_NAME = "ukaaf_grade2_raw"
+SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+EXPECTED_SUFFIX = ".braille"
+
+# Controlled UKAAF Grade 2 render dataset (Stage 3D-G3).
 BASE_DIR = Path("_external_sources/ukaaf/generated_grade2_rawbraille")
 IMAGES_DIR = BASE_DIR / "images"
 EXPECTED_DIR = BASE_DIR / "expected"
 METADATA_DIR = BASE_DIR / "metadata"
 
-SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-EXPECTED_SUFFIX = ".braille"
+# Real-capture intake location (Stage 3D-G5). Local-only and gitignored; empty
+# until safe, anonymised, approved physical samples are added.
+REAL_IMAGES_DIR = Path("samples/real_rawbraille_images")
+REAL_EXPECTED_DIR = Path("samples/real_rawbraille_expected")
+REAL_METADATA_DIR = Path("samples/real_rawbraille_metadata")
 
-# Allowed metadata values for this controlled dataset. Distinct from the
-# real-photo dataset: these samples are locally rendered from BRF cells.
-METADATA_ALLOWED_VALUES: dict[str, set] = {
-    "source_type": {"controlled_ukaaf_grade2"},
-    "braille_type": {"ueb_grade_2"},
-    "capture_method": {"rendered"},
-    "permission_status": {"approved_for_testing"},
-    "contains_real_pupil_data": {False},
-    "contains_live_assessment_material": {False},
+
+@dataclass(frozen=True)
+class RawBrailleDatasetSpec:
+    """Self-describing rawBraille dataset. ``capture_type`` keeps controlled
+    renders and real captures from being confused in reports."""
+
+    name: str
+    images_dir: Path
+    expected_dir: Path
+    metadata_dir: Path
+    capture_type: str  # controlled_render | synthetic | real_capture
+    source_type: str
+    grade_mode: str = "ueb_grade_2"
+    evaluation_mode: str = "rawbraille_cell_level"
+    description: str = ""
+
+
+DATASETS: dict[str, RawBrailleDatasetSpec] = {
+    "ukaaf_grade2_raw": RawBrailleDatasetSpec(
+        name="ukaaf_grade2_raw",
+        images_dir=IMAGES_DIR,
+        expected_dir=EXPECTED_DIR,
+        metadata_dir=METADATA_DIR,
+        capture_type="controlled_render",
+        source_type="controlled_ukaaf_grade2",
+        description="Controlled first-page renders from UKAAF Grade 2 BRF cells.",
+    ),
+    "real_capture_grade2_raw": RawBrailleDatasetSpec(
+        name="real_capture_grade2_raw",
+        images_dir=REAL_IMAGES_DIR,
+        expected_dir=REAL_EXPECTED_DIR,
+        metadata_dir=REAL_METADATA_DIR,
+        capture_type="real_capture",
+        source_type="real_photo",
+        description=(
+            "Real photographed/scanned Grade 2 Braille, cell-level only. Intake "
+            "location - empty until safe, anonymised, approved samples are added."
+        ),
+    ),
 }
+
+# Backwards-compatible alias.
+DATASET_NAME = "ukaaf_grade2_raw"
+
+
+def get_spec(name: str) -> RawBrailleDatasetSpec:
+    return DATASETS[name]
 
 
 @dataclass
@@ -62,6 +115,8 @@ class RawBrailleSample:
     metadata_path: Path | None
     category: str = "unknown"
     variant: str = "clean"
+    capture_type: str = "controlled_render"
+    source_type: str = "unknown"
     skip_reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -81,12 +136,23 @@ class RawBrailleSample:
 
 
 def _validate_metadata(metadata: dict) -> list[str]:
+    """Non-fatal metadata issues. Enum checks are lenient supersets so both
+    controlled and real-capture metadata validate cleanly."""
     issues: list[str] = []
-    for fieldname, allowed in METADATA_ALLOWED_VALUES.items():
-        if fieldname not in metadata:
-            issues.append(f"missing field '{fieldname}'")
-        elif metadata[fieldname] not in allowed:
-            issues.append(f"field '{fieldname}' has unexpected value")
+    if "permission_status" not in metadata:
+        issues.append("missing field 'permission_status'")
+    source = metadata.get("source_type")
+    if source is not None and source not in SOURCE_TYPES:
+        issues.append(f"source_type has unexpected value '{source}'")
+    capture = metadata.get("capture_type")
+    if capture is not None and capture not in CAPTURE_TYPES:
+        issues.append(f"capture_type has unexpected value '{capture}'")
+    braille = metadata.get("braille_type") or metadata.get("grade_mode")
+    if braille is not None and braille not in GRADE_MODES:
+        issues.append(f"braille_type/grade_mode has unexpected value '{braille}'")
+    for safety_flag in ("contains_real_pupil_data", "contains_live_assessment_material"):
+        if metadata.get(safety_flag) is True:
+            issues.append(f"{safety_flag} is true - not allowed")
     return issues
 
 
@@ -94,8 +160,15 @@ def discover_samples(
     images_dir: Path = IMAGES_DIR,
     expected_dir: Path = EXPECTED_DIR,
     metadata_dir: Path = METADATA_DIR,
+    *,
+    capture_type: str = "controlled_render",
+    source_type: str = "controlled_ukaaf_grade2",
 ) -> list[RawBrailleSample]:
-    """Find and gate every rendered Grade 2 sample (never modifies files)."""
+    """Find and gate every rawBraille sample (never modifies files).
+
+    ``capture_type`` / ``source_type`` are the dataset defaults, used unless a
+    sample's own metadata overrides them.
+    """
     samples: list[RawBrailleSample] = []
     if not images_dir.is_dir():
         return samples
@@ -110,6 +183,8 @@ def discover_samples(
             expected_path=None,
             metadata=None,
             metadata_path=None,
+            capture_type=capture_type,
+            source_type=source_type,
         )
 
         if image_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -137,6 +212,8 @@ def discover_samples(
                 sample.warnings.extend(_validate_metadata(metadata))
                 sample.category = str(metadata.get("category", "unknown"))
                 sample.variant = str(metadata.get("variant", "clean"))
+                sample.capture_type = str(metadata.get("capture_type", capture_type))
+                sample.source_type = str(metadata.get("source_type", source_type))
             else:
                 sample.warnings.append("metadata is not a JSON object")
         else:
@@ -150,3 +227,14 @@ def discover_samples(
 
         samples.append(sample)
     return samples
+
+
+def discover_dataset(spec: RawBrailleDatasetSpec) -> list[RawBrailleSample]:
+    """Discover samples for a named dataset spec, tagging their capture type."""
+    return discover_samples(
+        spec.images_dir,
+        spec.expected_dir,
+        spec.metadata_dir,
+        capture_type=spec.capture_type,
+        source_type=spec.source_type,
+    )
