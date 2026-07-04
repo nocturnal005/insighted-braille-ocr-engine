@@ -95,10 +95,17 @@ def text_line_to_cells(line: str) -> list[frozenset[int] | None]:
     return cells
 
 
-def render_braille_image(text: str) -> Image.Image:
-    """Render text as a synthetic Braille image (black dots on white)."""
-    line_cells = [text_line_to_cells(line) for line in text.split("\n")]
-    max_cells = max(len(cells) for cells in line_cells)
+def render_cells_image(
+    line_cells: list[list[frozenset[int] | None]],
+) -> Image.Image:
+    """Render pre-built cells (dot patterns; ``None`` = blank) as black dots.
+
+    Same standard geometry as :func:`render_braille_image`, but takes cells
+    directly so callers can render Braille that is not Grade 1 text - e.g.
+    cells decoded from a BRF transport encoding for cell-level validation.
+    """
+    line_cells = line_cells or [[]]
+    max_cells = max((len(cells) for cells in line_cells), default=1)
     width = 2 * MARGIN + max(1, max_cells) * CELL_ADVANCE
     height = 2 * MARGIN + (len(line_cells) - 1) * LINE_PITCH + 2 * UNIT + 2 * DOT_RADIUS
 
@@ -121,6 +128,11 @@ def render_braille_image(text: str) -> Image.Image:
                     fill=0,
                 )
     return image
+
+
+def render_braille_image(text: str) -> Image.Image:
+    """Render text as a synthetic Braille image (black dots on white)."""
+    return render_cells_image([text_line_to_cells(line) for line in text.split("\n")])
 
 
 def image_to_data_url(image: Image.Image) -> str:
