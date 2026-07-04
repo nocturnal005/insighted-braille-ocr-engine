@@ -19,3 +19,14 @@ samples/real_anonymised_metadata/*
 # Real-photo baseline evaluation reports are LOCAL-ONLY by default: they can
 # contain real sample ids and capture metadata.
 reports/
+
+# External source materials (e.g. UKAAF UEB resources) are LOCAL-ONLY:
+# downloaded documents, generated previews/thumbnails, and intake reports may
+# contain copyrighted third-party content and must never be committed.
+_external_sources/
+resources/
+external_sample_reports/
+*.downloaded.pdf
+*.downloaded.brf
+*.downloaded.doc
+*.downloaded.docx
