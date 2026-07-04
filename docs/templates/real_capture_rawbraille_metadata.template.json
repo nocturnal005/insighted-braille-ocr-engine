@@ -1,0 +1,18 @@
+{
+  "permission_status": "approved_for_testing",
+  "capture_type": "real_capture",
+  "source_type": "real_photo",
+  "braille_type": "ueb_grade_2",
+  "grade_mode": "ueb_grade_2",
+  "evaluation_mode": "rawbraille_cell_level",
+  "contains_real_pupil_data": false,
+  "contains_live_assessment_material": false,
+  "requires_english_transcript": false,
+  "consent_or_safety_note": "PLACEHOLDER - state who authored/approved this non-pupil test sample and confirm no pupil/school/assessment material is involved",
+  "anonymisation_note": "PLACEHOLDER - confirm the image contains Braille only: no names, handwriting, faces, labels, logos, or identifying file/EXIF metadata",
+  "capture_method": "scanner",
+  "lighting_note": "PLACEHOLDER - e.g. 'even diffuse daylight' or 'gentle side light for embossed dots'",
+  "device_note": "PLACEHOLDER - generic device description only, e.g. 'flatbed scanner, 300 dpi'; never serial numbers or personal identifiers",
+  "crop_note": "PLACEHOLDER - confirm the image is cropped to the Braille-only region",
+  "verifier_role": "PLACEHOLDER - who verified the expected .braille cells, e.g. 'Braille-literate specialist' or 'brf_cell_source'"
+}
