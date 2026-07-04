@@ -1,0 +1,14 @@
+[
+  {
+    "sample_id": "rb_capture_001",
+    "image_path": "samples/real_rawbraille_images/rb_capture_001.png",
+    "expected_rawbraille_path": "samples/real_rawbraille_expected/rb_capture_001.braille",
+    "dataset_category": "rawbraille_validation",
+    "capture_type": "real_capture",
+    "source_type": "real_photo",
+    "consent_or_safety_note": "PLACEHOLDER - state who authored/approved this non-pupil test sample, e.g. 'self-authored test sheet, approved by project owner for OCR validation'",
+    "grade_mode": "ueb_grade_2",
+    "evaluation_mode": "rawbraille_cell_level",
+    "requires_english_transcript": false
+  }
+]
