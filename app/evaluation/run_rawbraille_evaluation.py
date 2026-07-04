@@ -1,24 +1,30 @@
-"""Cell-level rawBraille evaluation harness (Stage 3D-G3).
+"""Cell-level rawBraille evaluation harness (Stage 3D-G3, hardened in 3D-G5).
 
 Usage:
     python -m app.evaluation.run_rawbraille_evaluation --dataset ukaaf_grade2_raw
+    python -m app.evaluation.run_rawbraille_evaluation --dataset real_capture_grade2_raw
     python -m app.evaluation.run_rawbraille_evaluation --dataset ukaaf_grade2_raw \\
         --write-report reports/ukaaf_g3_rawbraille/ukaaf-grade2-rawbraille-report.json
 
-Runs the OCR pipeline on locally rendered UKAAF Grade 2 samples and compares
-the returned ``rawBraille`` to expected Braille cells decoded from the source
-BRF. Scores the VISUAL pipeline only:
+Runs the OCR pipeline on a rawBraille dataset and compares the returned
+``rawBraille`` to expected Braille cells. Scores the VISUAL pipeline only:
 
     rawBraille CER, cell error rate (space-agnostic), line-count mismatch,
     cell-count mismatch, exact-sample-match rate, line-reconstruction accuracy,
     confidence, flags, processing time, repeatability of rawBraille.
 
+Every dataset is self-describing (see ``rawbraille_dataset.DATASETS``): reports
+and console output state the dataset's capture type (controlled render,
+synthetic, or real capture) so controlled-render results can never be mistaken
+for real-capture results, and vice versa.
+
 English draft-text CER/WER is deliberately NOT computed - the engine does not
 interpret Grade 2 contractions, so English scoring would be meaningless here.
+Reports carry explicit ``english_cer_wer_computed: false`` and scope wording.
 
 Prints and writes metrics only. Never prints or stores expected or predicted
 rawBraille, draft text, image data, or unsafe file names. An empty/missing
-dataset exits cleanly (the generated samples are local-only).
+dataset exits cleanly (sample folders are local-only).
 """
 
 from __future__ import annotations
@@ -35,7 +41,10 @@ from time import perf_counter
 from app.core.config import get_settings
 from app.evaluation.rawbraille_dataset import (
     DATASET_NAME,
-    discover_samples,
+    DATASETS,
+    RawBrailleDatasetSpec,
+    discover_dataset,
+    get_spec,
 )
 from app.evaluation.rawbraille_metrics import sample_metrics
 from app.models.requests import OcrRequest
@@ -43,7 +52,7 @@ from app.ocr.pipeline import run_ocr
 
 MIME_BY_EXTENSION = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
-REPORT_SCHEMA_VERSION = "1.0"
+REPORT_SCHEMA_VERSION = "1.1"  # 1.1: Stage 3D-G5 dataset descriptor + scope fields
 REPORT_NOTE = (
     "Cell-level (rawBraille) validation only. This is NOT English Grade 2 "
     "transcription accuracy - the engine does not interpret contractions. "
@@ -51,9 +60,41 @@ REPORT_NOTE = (
     "remains mandatory."
 )
 
+_CAPTURE_BANNERS = {
+    "controlled_render": (
+        "CONTROLLED RENDER dataset: locally rendered images, not photographs. "
+        "Results do NOT demonstrate real-world capture accuracy."
+    ),
+    "synthetic": (
+        "SYNTHETIC dataset: generated test material. Results do NOT "
+        "demonstrate real-world capture accuracy."
+    ),
+    "real_capture": (
+        "REAL CAPTURE dataset: photographed/scanned physical Braille. Report "
+        "results separately from controlled-render baselines."
+    ),
+}
+
 
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _run_id() -> str:
+    return "rawbraille-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _dataset_descriptor(spec: RawBrailleDatasetSpec) -> dict:
+    """Safe, self-describing dataset block for reports and console output."""
+    return {
+        "name": spec.name,
+        "dataset_category": "rawbraille_validation",
+        "capture_type": spec.capture_type,
+        "source_type": spec.source_type,
+        "grade_mode": spec.grade_mode,
+        "evaluation_mode": spec.evaluation_mode,
+        "description": spec.description,
+    }
 
 
 def _evaluate(sample, runs: int) -> dict:
@@ -65,10 +106,10 @@ def _evaluate(sample, runs: int) -> dict:
         + base64.b64encode(sample.image_path.read_bytes()).decode("ascii")
     )
     # Safe request context only - no titles/file names that could carry
-    # identifying text (UKAAF material stays local).
+    # identifying text (sample material stays local).
     request = OcrRequest(
         taskId=f"rawbraille-{sample.sample_id}",
-        title="ukaaf-grade2-rawbraille-validation",
+        title="rawbraille-cell-level-validation",
         fileName=f"{sample.sample_id}{sample.image_path.suffix.lower()}",
         mimeType=mime,
         dataUrl=data_url,
@@ -104,6 +145,7 @@ def _evaluate(sample, runs: int) -> dict:
             "failed": errored or predicted == "",
             "category": sample.category,
             "variant": sample.variant,
+            "capture_type": sample.capture_type,
             "label": sample.safe_label,
         }
     )
@@ -123,6 +165,19 @@ def _hardest_categories(rows: list[dict]) -> list[tuple[str, float, int]]:
     return ranked
 
 
+def _confidence_summary(rows: list[dict]) -> dict:
+    scores = [r["confidence"] for r in rows]
+    if not scores:
+        return {"n": 0}
+    return {
+        "n": len(scores),
+        "mean": round(_mean(scores), 4),
+        "median": round(median(scores), 4),
+        "min": round(min(scores), 4),
+        "max": round(max(scores), 4),
+    }
+
+
 def _print_row(row: dict) -> None:
     print(
         f"{row['label']:<40} {row['cell_error_rate']:>7.3f} "
@@ -132,7 +187,13 @@ def _print_row(row: dict) -> None:
     )
 
 
-def _build_report(rows: list[dict], samples: int, skipped: int) -> dict:
+def _build_report(
+    spec: RawBrailleDatasetSpec,
+    rows: list[dict],
+    samples: int,
+    skipped: int,
+    run_id: str,
+) -> dict:
     failed = [r for r in rows if r["failed"]]
     exact = [r for r in rows if r["exact_sample_match"]]
     flag_counts: Counter[str] = Counter()
@@ -142,8 +203,13 @@ def _build_report(rows: list[dict], samples: int, skipped: int) -> dict:
         "schema_version": REPORT_SCHEMA_VERSION,
         "engine_version": get_settings().service_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "dataset": DATASET_NAME,
+        "run_id": run_id,
+        "dataset": _dataset_descriptor(spec),
+        # Explicit scope statement: this report can never carry English scores.
+        "english_cer_wer_computed": False,
+        "grade2_english_transcription": "out_of_scope",
         "note": REPORT_NOTE,
+        "capture_type_note": _CAPTURE_BANNERS[spec.capture_type],
         "counts": {
             "samples": samples,
             "evaluated": len(rows),
@@ -166,10 +232,10 @@ def _build_report(rows: list[dict], samples: int, skipped: int) -> dict:
             "mean_line_reconstruction_accuracy": round(
                 _mean([r["line_reconstruction_accuracy"] for r in rows]), 4
             ),
-            "mean_confidence": round(_mean([r["confidence"] for r in rows]), 4),
             "mean_ms": round(_mean([r["ms"] for r in rows]), 1),
             "repeatable_all": all(r["repeatable"] for r in rows),
         },
+        "confidence_summary": _confidence_summary(rows),
         "hardest_categories": [
             {"category": cat, "mean_cell_error_rate": round(cer, 4), "n": n}
             for cat, cer, n in _hardest_categories(rows)
@@ -184,6 +250,7 @@ def _build_report(rows: list[dict], samples: int, skipped: int) -> dict:
                 "label": row["label"],
                 "category": row["category"],
                 "variant": row["variant"],
+                "capture_type": row["capture_type"],
                 "cell_error_rate": round(row["cell_error_rate"], 4),
                 "rawbraille_cer": round(row["rawbraille_cer"], 4),
                 "expected_lines": row["expected_lines"],
@@ -204,14 +271,26 @@ def _build_report(rows: list[dict], samples: int, skipped: int) -> dict:
     }
 
 
-def run(runs: int, write_report: Path | None) -> int:
-    samples = discover_samples()
+def run(dataset: str, runs: int, write_report: Path | None) -> int:
+    spec = get_spec(dataset)
+    run_id = _run_id()
+    print(f"dataset={spec.name} capture_type={spec.capture_type} "
+          f"grade_mode={spec.grade_mode} evaluation_mode={spec.evaluation_mode} "
+          f"run_id={run_id}")
+    print(_CAPTURE_BANNERS[spec.capture_type])
+
+    samples = discover_dataset(spec)
     if not samples:
         print(
-            f"No '{DATASET_NAME}' samples found - this is expected on a fresh "
-            "checkout (the rendered UKAAF Grade 2 samples are local-only and "
-            "gitignored). Generate them locally, then re-run."
+            f"\nNo '{spec.name}' samples found - this is expected on a fresh "
+            "checkout (sample folders are local-only and gitignored)."
         )
+        if spec.capture_type == "real_capture":
+            print(
+                "Real-capture intake is empty until safe, anonymised, approved "
+                "physical samples are added. Audit readiness first with:\n"
+                f"  python -m app.evaluation.audit_rawbraille_dataset --dataset {spec.name}"
+            )
         print(f"\nnote: {REPORT_NOTE}")
         return 0
 
@@ -237,7 +316,10 @@ def run(runs: int, write_report: Path | None) -> int:
     failed = [r for r in rows if r["failed"]]
     exact = [r for r in rows if r["exact_sample_match"]]
     print()
-    print("=== cell-level summary (rawBraille vs BRF cells; NOT English) ===")
+    print(
+        f"=== cell-level summary ({spec.capture_type}; rawBraille vs expected "
+        "cells; NOT English) ==="
+    )
     print(
         f"samples={len(samples)} evaluated={len(rows)} skipped={len(skipped)} "
         f"failed={len(failed)}"
@@ -254,10 +336,12 @@ def run(runs: int, write_report: Path | None) -> int:
         f"cell_count_mismatch_rate="
         f"{sum(1 for r in rows if r['cell_count_mismatch']) / max(len(rows), 1):.3f}"
     )
+    conf = _confidence_summary(rows)
     print(
         f"mean_line_reconstruction_accuracy="
         f"{_mean([r['line_reconstruction_accuracy'] for r in rows]):.3f} "
-        f"mean_confidence={_mean([r['confidence'] for r in rows]):.3f} "
+        f"confidence(mean/median/min/max)="
+        f"{conf['mean']:.3f}/{conf['median']:.3f}/{conf['min']:.3f}/{conf['max']:.3f} "
         f"mean_ms={_mean([r['ms'] for r in rows]):.1f} "
         f"repeatable_all={all(r['repeatable'] for r in rows)}"
     )
@@ -272,15 +356,16 @@ def run(runs: int, write_report: Path | None) -> int:
         flag_counts.update(row["flag_categories"])
     if flag_counts:
         print()
-        print("flag categories (samples raising each):")
+        print("uncertainty flag categories (samples raising each):")
         for category, count in flag_counts.most_common():
             print(f"  {category}={count}")
 
     print()
+    print("english_cer_wer_computed=False (Grade 2 English transcription is out of scope)")
     print(f"note: {REPORT_NOTE}")
 
     if write_report is not None:
-        report = _build_report(rows, len(samples), len(skipped))
+        report = _build_report(spec, rows, len(samples), len(skipped), run_id)
         write_report.parent.mkdir(parents=True, exist_ok=True)
         write_report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(
@@ -294,9 +379,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
-        choices=[DATASET_NAME],
+        choices=sorted(DATASETS),
         default=DATASET_NAME,
-        help="Dataset to evaluate (only the local UKAAF Grade 2 raw set).",
+        help="rawBraille dataset to evaluate (all are cell-level only).",
     )
     parser.add_argument(
         "--runs", type=int, default=3, help="Runs per image for repeatability (default 3)"
@@ -310,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    return run(args.runs, Path(args.write_report) if args.write_report else None)
+    return run(args.dataset, args.runs, Path(args.write_report) if args.write_report else None)
 
 
 if __name__ == "__main__":
