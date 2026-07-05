@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Braille OCR local demo — draft only</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --muted: #555;
+    --warn-bg: #fff3cd;
+    --warn-border: #b45309;
+    --panel: #f6f6f4;
+    --border: #d0d0cc;
+    --sev-low: #2f6f4f;
+    --sev-medium: #b45309;
+    --sev-high: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light; background: #fdfdfb; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: #fdfdfb;
+    color: var(--ink);
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 1rem 1.25rem 3rem;
+    line-height: 1.5;
+  }
+  .draft-banner {
+    background: var(--warn-bg);
+    border: 2px solid var(--warn-border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-weight: 600;
+  }
+  .draft-banner .title { display: block; font-size: 1.05rem; margin-bottom: 0.25rem; }
+  h1 { font-size: 1.4rem; margin-bottom: 0; }
+  p.sub { color: var(--muted); margin-top: 0.25rem; }
+  form, .result {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1rem 0;
+  }
+  label { display: block; font-weight: 600; margin: 0.6rem 0 0.2rem; }
+  .hint { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
+  input[type="password"] { width: 100%; max-width: 24rem; padding: 0.35rem; }
+  button {
+    margin-top: 0.9rem;
+    padding: 0.5rem 1.1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #status { margin: 0.75rem 0; font-weight: 600; }
+  #status.error { color: var(--sev-high); }
+  .metric { margin: 0.25rem 0; }
+  .metric b { display: inline-block; min-width: 9.5rem; }
+  pre {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.6rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre.braille { font-size: 1.6rem; line-height: 1.7; }
+  ul.flags { padding-left: 1.2rem; }
+  ul.flags li { margin: 0.3rem 0; }
+  .sev { font-weight: 700; text-transform: uppercase; font-size: 0.75rem; }
+  .sev-low { color: var(--sev-low); }
+  .sev-medium { color: var(--sev-medium); }
+  .sev-high { color: var(--sev-high); }
+  details { margin-top: 0.75rem; }
+  summary { cursor: pointer; font-weight: 600; }
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<h1>Braille OCR — local human demo</h1>
+<p class="sub">insighted-braille-ocr-engine · local preview page (Stage 3D-H1)</p>
+
+<div class="draft-banner" role="alert">
+  <span class="title">Draft-only OCR — AI drafts, humans verify.</span>
+  Every transcription shown on this page is an unverified draft. A QTVI or
+  Braille-literate specialist must verify it before any use in teacher
+  feedback or export. This engine never claims certified Braille accuracy.
+</div>
+
+<p>
+  Choose a PNG or JPEG photo/scan of a Braille page. The image is sent only
+  to this local service on the same address and is processed in memory —
+  nothing is stored, and nothing leaves this machine. Only use material
+  allowed by the collection protocol: never real pupil work, school
+  assessment material, or anything identifying a pupil or school.
+</p>
+
+<form id="ocr-form">
+  <label for="image">Braille page image (PNG or JPEG)</label>
+  <input id="image" name="image" type="file" accept="image/png,image/jpeg" required>
+
+  <label for="api-key">API key <span class="hint">(only needed if the service was
+  started with OCR_ENGINE_API_KEY set; leave empty otherwise)</span></label>
+  <input id="api-key" name="api-key" type="password" autocomplete="off">
+
+  <button type="submit" id="run-btn">Run draft OCR</button>
+</form>
+
+<div id="status" role="status"></div>
+
+<div class="result" id="result" hidden>
+  <h2>Draft result (unverified)</h2>
+  <div class="metric"><b>Confidence:</b> <span id="confidence"></span>
+    <span class="hint">internal heuristic — not a calibrated probability, and
+    never a substitute for specialist verification</span></div>
+  <div class="metric"><b>Detected cells:</b> <span id="cell-count"></span></div>
+  <div class="metric"><b>Request id:</b> <span id="request-id"></span></div>
+
+  <h3>Uncertainty flags</h3>
+  <ul class="flags" id="flags"></ul>
+
+  <h3>Detected Braille cells (rawBraille)</h3>
+  <pre class="braille" id="raw-braille"></pre>
+
+  <h3>Draft back-translation — unverified draft</h3>
+  <pre id="draft-text"></pre>
+
+  <details>
+    <summary>Full /ocr contract response (JSON)</summary>
+    <pre id="raw-json"></pre>
+  </details>
+</div>
+
+<footer>
+  Reminder: this page is a local demonstration tool only. Results describe a
+  single image and are never evidence of real-world accuracy. All output
+  requires QTVI / Braille-literate specialist verification in InsightEd AI
+  before teacher feedback or export.
+</footer>
+
+<script>
+"use strict";
+(function () {
+  var form = document.getElementById("ocr-form");
+  var statusEl = document.getElementById("status");
+  var resultEl = document.getElementById("result");
+  var runBtn = document.getElementById("run-btn");
+
+  var MIME_BY_EXTENSION = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg"
+  };
+
+  function setStatus(message, isError) {
+    statusEl.textContent = message;
+    statusEl.className = isError ? "error" : "";
+  }
+
+  function randomTaskId() {
+    var bytes = new Uint8Array(8);
+    crypto.getRandomValues(bytes);
+    var hex = "";
+    for (var i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, "0");
+    }
+    return "demo-" + hex;
+  }
+
+  function inferMime(file) {
+    if (file.type === "image/png" || file.type === "image/jpeg") {
+      return file.type;
+    }
+    var name = file.name.toLowerCase();
+    var dot = name.lastIndexOf(".");
+    var extension = dot >= 0 ? name.slice(dot) : "";
+    return MIME_BY_EXTENSION[extension] || null;
+  }
+
+  function readAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = function () { reject(new Error("Could not read the file.")); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderFlags(flags) {
+    var list = document.getElementById("flags");
+    list.textContent = "";
+    if (!flags || flags.length === 0) {
+      var li = document.createElement("li");
+      li.textContent = "(none)";
+      list.appendChild(li);
+      return;
+    }
+    flags.forEach(function (flag) {
+      var item = document.createElement("li");
+      var sev = document.createElement("span");
+      sev.className = "sev sev-" + flag.severity;
+      sev.textContent = flag.severity;
+      item.appendChild(sev);
+      var where = flag.text ? " [" + flag.text + "]" : "";
+      item.appendChild(
+        document.createTextNode(" " + flag.category + where + " — " + flag.reason)
+      );
+      list.appendChild(item);
+    });
+  }
+
+  function renderResult(data) {
+    document.getElementById("confidence").textContent =
+      (data.confidence * 100).toFixed(1) + "% ";
+    document.getElementById("cell-count").textContent = String(
+      (data.rawCells || []).length
+    );
+    document.getElementById("request-id").textContent =
+      data.providerRequestId || "";
+    renderFlags(data.flags);
+    document.getElementById("raw-braille").textContent =
+      data.rawBraille || "(none — the page could not be read; see flags)";
+    document.getElementById("draft-text").textContent =
+      data.draftText || "(empty — no draft was produced; see flags)";
+    document.getElementById("raw-json").textContent =
+      JSON.stringify(data, null, 2);
+    resultEl.hidden = false;
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    resultEl.hidden = true;
+
+    var file = document.getElementById("image").files[0];
+    if (!file) {
+      setStatus("Choose a PNG or JPEG image first.", true);
+      return;
+    }
+    var mime = inferMime(file);
+    if (!mime) {
+      setStatus("Unsupported file type — use a PNG or JPEG image.", true);
+      return;
+    }
+    var apiKey = document.getElementById("api-key").value.trim();
+    if (apiKey && !/^[\x20-\x7e]+$/.test(apiKey)) {
+      setStatus(
+        "The API key contains characters that cannot be sent in a header " +
+        "(often an invisible character from copy-paste). Re-type it and try again.",
+        true
+      );
+      return;
+    }
+
+    runBtn.disabled = true;
+    setStatus("Running draft OCR locally…", false);
+
+    readAsDataUrl(file)
+      .then(function (dataUrl) {
+        var headers = { "Content-Type": "application/json" };
+        if (apiKey) {
+          headers["X-API-Key"] = apiKey;
+        }
+        // Some environments report no file.type, so FileReader emits a
+        // data:application/octet-stream prefix that the service would
+        // reject; the contract wants the prefix to match mimeType.
+        var normalisedDataUrl = dataUrl.replace(
+          /^data:[^;,]*;base64,/, "data:" + mime + ";base64,"
+        );
+        return fetch("/ocr", {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify({
+            taskId: randomTaskId(),
+            title: "Local demo page preview",
+            fileName: file.name,
+            mimeType: mime,
+            dataUrl: normalisedDataUrl,
+            subject: null,
+            yearGroup: null
+          })
+        }).catch(function () {
+          throw new Error(
+            "Could not reach the local service. Is it running on this " +
+            "address? Start it with: uvicorn app.main:app --port 8000"
+          );
+        });
+      })
+      .then(function (response) {
+        if (response.status === 401) {
+          throw new Error(
+            "The service requires an API key (401). Enter the value of " +
+            "OCR_ENGINE_API_KEY in the API key field and try again."
+          );
+        }
+        if (!response.ok) {
+          throw new Error("The service returned HTTP " + response.status + ".");
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        renderResult(data);
+        setStatus(
+          "Done. This result is an unverified draft — specialist " +
+          "verification is required before any real use.",
+          false
+        );
+      })
+      .catch(function (error) {
+        setStatus(error && error.message ? error.message : String(error), true);
+      })
+      .finally(function () {
+        runBtn.disabled = false;
+      });
+  });
+})();
+</script>
+</body>
+</html>

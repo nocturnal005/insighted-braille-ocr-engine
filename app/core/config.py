@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     liblouis_enabled: bool = True
     liblouis_table: str = "en-ueb-g1.ctb"
 
+    # Local human demo page (Stage 3D-H1). Off by default: GET /demo returns
+    # 404 unless explicitly enabled for a local demo. Never enable in a
+    # deployed integration.
+    demo_page_enabled: bool = False
+
     @property
     def max_image_bytes(self) -> int:
         return int(self.max_image_mb * 1024 * 1024)

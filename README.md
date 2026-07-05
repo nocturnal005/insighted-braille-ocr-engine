@@ -27,6 +27,7 @@ any output.
 | GET    | `/health`  | Liveness probe                                       |
 | GET    | `/version` | Service name, version, and the draft-only warning    |
 | POST   | `/ocr`     | Draft Braille OCR (optional API key, see below)      |
+| GET    | `/demo`    | Optional local demo page — 404 unless `DEMO_PAGE_ENABLED=true` |
 
 `/ocr` **always returns HTTP 200 with valid contract JSON** for a
 well-formed request body. If OCR fails (unsupported type, bad base64,
@@ -143,6 +144,7 @@ Copy `.env.example` to `.env` and adjust. Key settings:
 | `LOG_LEVEL`          | `INFO`           | Logging level (metadata only — see below)        |
 | `LIBLOUIS_ENABLED`   | `true`           | Attempt Liblouis back-translation if installed   |
 | `LIBLOUIS_TABLE`     | `en-ueb-g1.ctb`  | Liblouis table to use                            |
+| `DEMO_PAGE_ENABLED`  | `false`          | Serve the local demo page at `/demo` (local use only) |
 
 **Authentication:** when `OCR_ENGINE_API_KEY` is set, `POST /ocr` accepts
 the key in **either** header form:
@@ -310,6 +312,34 @@ numbers are the honest measure, and they are expected to be worse.
 - never include pupil names or identifying material — use synthetic or
   anonymised pages for any testing.
 
+## Local preview and human demo (Stage 3D-H1)
+
+Two local-only viewers for the pipeline — no OCR or contract changes, no
+new dependencies, nothing stored:
+
+```powershell
+# CLI preview, no server needed: draft report for one image
+python -m app.demo.local_preview samples\images\sample_01_hello_world.png
+python -m app.demo.local_preview path\to\photo.jpg --json   # full contract JSON
+
+# Browser demo page (off by default; local use only)
+$env:DEMO_PAGE_ENABLED = "true"
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+# then open http://localhost:8000/demo
+```
+
+When the demo page is enabled, bind to loopback only (as above — never
+`--host 0.0.0.0`): the page promises that images and the API key stay on
+this machine, which is only true while the service is unreachable from the
+network.
+
+Both show the draft-only banner, confidence, uncertainty flags, the
+detected Braille cells, and the draft back-translation. Full walkthrough,
+demo script, and troubleshooting:
+[docs/stage_3d_h1_local_preview_demo.md](docs/stage_3d_h1_local_preview_demo.md).
+Previews are demonstrations, never accuracy evidence — and only ever use
+material allowed by the collection protocols (no pupil work).
+
 ## Docker
 
 ```powershell
@@ -350,12 +380,13 @@ notes:
 ```
 app/
   main.py            FastAPI app + global error handling
-  api/               health, version, ocr endpoints
+  api/               health, version, ocr, demo endpoints
   core/              config, logging (metadata-only), API key security
   models/            Pydantic request/response contract models
   ocr/               decode → preprocess → dots → cells → lines → braille → confidence
   translation/       braille maps, Grade 1 fallback, optional Liblouis adapter
   evaluation/        CER/WER metrics, repeatability, harness, sample generator
+  demo/              local preview CLI + demo page HTML (Stage 3D-H1)
   tests/             pytest suite (contract, decode safety, shape, metrics, e2e)
 samples/             synthetic images, ground truth, contract examples
 Dockerfile, .env.example, limitations.md
