@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.api import health, ocr, version
+from app.api import demo, health, ocr, version
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 
@@ -32,6 +32,7 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(version.router)
 app.include_router(ocr.router)
+app.include_router(demo.router)
 
 
 @app.exception_handler(Exception)

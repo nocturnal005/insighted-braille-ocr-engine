@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ocr-engine-demo",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['DEMO_PAGE_ENABLED'] = 'true'; import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "port": 8000
+    }
+  ]
+}
