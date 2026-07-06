@@ -352,6 +352,24 @@ demo script, and troubleshooting:
 Previews are demonstrations, never accuracy evidence — and only ever use
 material allowed by the collection protocols (no pupil work).
 
+## Real-capture diagnostic (Stage 3D-J1)
+
+A local-only diagnostic CLI for real photographed/scanned Braille
+candidates: per image it reports how far the pipeline got (stage ladder
+L0–L6: decode → dots → rows → cells → rawBraille → optional Grade 2 draft
+→ scored), why it stopped, and a capture-quality triage
+(readable/borderline/retake/unusable):
+
+```powershell
+python -m app.evaluation.run_real_capture_diagnostic --report reports\real_capture_diagnostic\run.json
+```
+
+Reports are local-only and content-free (counts, stages, and safe labels —
+never OCR text or Braille content). Scores appear only for samples gated
+by the Stage 3D-G6 protocol with `.braille` ground truth; an empty intake
+honestly reports BLOCKED. This is a diagnostic, never an accuracy claim.
+Full guide: [docs/stage_3d_j1_real_capture_ocr_diagnostic.md](docs/stage_3d_j1_real_capture_ocr_diagnostic.md).
+
 ## Docker
 
 ```powershell
