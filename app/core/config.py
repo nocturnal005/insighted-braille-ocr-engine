@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     service_name: str = "insighted-braille-ocr-engine"
-    service_version: str = "0.4.0"
+    service_version: str = "0.5.0"
     api_version: str = "v1"
     draft_warning: str = DRAFT_ONLY_WARNING
 
@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     liblouis_enabled: bool = True
     liblouis_table: str = "en-ueb-g1.ctb"
+    liblouis_dll_dir: str | None = None
+    liblouis_table_path: str | None = None
 
     # Local human demo page (Stage 3D-H1). Off by default: GET /demo returns
     # 404 unless explicitly enabled for a local demo. Never enable in a

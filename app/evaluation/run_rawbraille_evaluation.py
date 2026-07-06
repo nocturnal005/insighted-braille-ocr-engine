@@ -18,9 +18,14 @@ and console output state the dataset's capture type (controlled render,
 synthetic, or real capture) so controlled-render results can never be mistaken
 for real-capture results, and vice versa.
 
-English draft-text CER/WER is deliberately NOT computed - the engine does not
-interpret Grade 2 contractions, so English scoring would be meaningless here.
-Reports carry explicit ``english_cer_wer_computed: false`` and scope wording.
+When Liblouis is available with a Grade 2 (contracted) table, supplementary
+English CER/WER is computed by back-translating the expected rawBraille
+through Liblouis to derive a reference English text. These metrics are
+supplementary: cell-level rawBraille remains the primary evaluation, and
+English scores are reported separately with a caveat that they depend on
+both the visual pipeline and Liblouis translation quality. When Liblouis
+Grade 2 is not available, English scoring is skipped and reports carry
+``english_cer_wer_computed: false``.
 
 Prints and writes metrics only. Never prints or stores expected or predicted
 rawBraille, draft text, image data, or unsafe file names. An empty/missing
@@ -39,6 +44,7 @@ from statistics import median
 from time import perf_counter
 
 from app.core.config import get_settings
+from app.evaluation.metrics import character_error_rate, normalise_text, word_error_rate
 from app.evaluation.rawbraille_dataset import (
     DATASET_NAME,
     DATASETS,
@@ -49,6 +55,11 @@ from app.evaluation.rawbraille_dataset import (
 from app.evaluation.rawbraille_metrics import sample_metrics
 from app.models.requests import OcrRequest
 from app.ocr.pipeline import run_ocr
+from app.translation.liblouis_adapter import (
+    is_grade2_table,
+    liblouis_available,
+    liblouis_back_translate,
+)
 
 MIME_BY_EXTENSION = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
@@ -97,16 +108,35 @@ def _dataset_descriptor(spec: RawBrailleDatasetSpec) -> dict:
     }
 
 
-def _evaluate(sample, runs: int) -> dict:
-    """Run the pipeline `runs` times on one sample; cell-level metrics only."""
+def _english_scoring_available() -> bool:
+    """True when Liblouis is available and configured for Grade 2."""
+    settings = get_settings()
+    return (
+        settings.liblouis_enabled
+        and is_grade2_table(settings.liblouis_table)
+        and liblouis_available()
+    )
+
+
+def _derive_english_reference(expected_rawbraille: str) -> str | None:
+    """Back-translate expected rawBraille through Liblouis Grade 2 to derive
+    an English reference text. Returns None if unavailable."""
+    settings = get_settings()
+    result = liblouis_back_translate(expected_rawbraille, settings.liblouis_table)
+    if result is None:
+        return None
+    return normalise_text(result)
+
+
+def _evaluate(sample, runs: int, english_scoring: bool = False) -> dict:
+    """Run the pipeline `runs` times on one sample; cell-level metrics plus
+    optional English CER/WER when Liblouis Grade 2 is available."""
     expected = sample.expected_rawbraille()
     mime = MIME_BY_EXTENSION[sample.image_path.suffix.lower()]
     data_url = (
         f"data:{mime};base64,"
         + base64.b64encode(sample.image_path.read_bytes()).decode("ascii")
     )
-    # Safe request context only - no titles/file names that could carry
-    # identifying text (sample material stays local).
     request = OcrRequest(
         taskId=f"rawbraille-{sample.sample_id}",
         title="rawbraille-cell-level-validation",
@@ -116,6 +146,7 @@ def _evaluate(sample, runs: int) -> dict:
     )
 
     raw_outputs: list[str] = []
+    draft_texts: list[str] = []
     durations_ms: list[float] = []
     confidence = 0.0
     flag_categories: set[str] = set()
@@ -129,6 +160,7 @@ def _evaluate(sample, runs: int) -> dict:
             break
         durations_ms.append((perf_counter() - started) * 1000)
         raw_outputs.append(response.rawBraille or "")
+        draft_texts.append(normalise_text(response.draftText))
         confidence = response.confidence
         if run_index == 0:
             flag_categories = {f.category for f in response.flags}
@@ -149,6 +181,14 @@ def _evaluate(sample, runs: int) -> dict:
             "label": sample.safe_label,
         }
     )
+
+    if english_scoring and draft_texts:
+        english_ref = _derive_english_reference(expected)
+        if english_ref is not None:
+            hypothesis = draft_texts[0]
+            metrics["english_cer"] = character_error_rate(english_ref, hypothesis)
+            metrics["english_wer"] = word_error_rate(english_ref, hypothesis)
+
     return metrics
 
 
@@ -178,13 +218,16 @@ def _confidence_summary(rows: list[dict]) -> dict:
     }
 
 
-def _print_row(row: dict) -> None:
-    print(
+def _print_row(row: dict, english: bool = False) -> None:
+    line = (
         f"{row['label']:<40} {row['cell_error_rate']:>7.3f} "
         f"{row['rawbraille_cer']:>7.3f} {row['line_count_mismatch']:>5} "
         f"{row['cell_count_mismatch']:>5} {str(row['exact_sample_match']):>6} "
         f"{row['confidence']:>6.3f} {row['ms']:>7.1f}"
     )
+    if english and "english_cer" in row:
+        line += f" {row['english_cer']:>7.3f} {row['english_wer']:>7.3f}"
+    print(line)
 
 
 def _build_report(
@@ -193,21 +236,25 @@ def _build_report(
     samples: int,
     skipped: int,
     run_id: str,
+    english_scoring: bool = False,
 ) -> dict:
     failed = [r for r in rows if r["failed"]]
     exact = [r for r in rows if r["exact_sample_match"]]
     flag_counts: Counter[str] = Counter()
     for row in rows:
         flag_counts.update(row["flag_categories"])
-    return {
+    english_rows = [r for r in rows if "english_cer" in r]
+    report: dict = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "engine_version": get_settings().service_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
         "dataset": _dataset_descriptor(spec),
-        # Explicit scope statement: this report can never carry English scores.
-        "english_cer_wer_computed": False,
-        "grade2_english_transcription": "out_of_scope",
+        "english_cer_wer_computed": english_scoring and bool(english_rows),
+        "grade2_english_transcription": (
+            "supplementary_via_liblouis" if english_scoring and english_rows
+            else "out_of_scope"
+        ),
         "note": REPORT_NOTE,
         "capture_type_note": _CAPTURE_BANNERS[spec.capture_type],
         "counts": {
@@ -244,40 +291,74 @@ def _build_report(
             {"category": category, "samples": count}
             for category, count in flag_counts.most_common()
         ],
-        # Per-sample: metrics + safe label only. No Braille text ever.
-        "samples": [
-            {
-                "label": row["label"],
-                "category": row["category"],
-                "variant": row["variant"],
-                "capture_type": row["capture_type"],
-                "cell_error_rate": round(row["cell_error_rate"], 4),
-                "rawbraille_cer": round(row["rawbraille_cer"], 4),
-                "expected_lines": row["expected_lines"],
-                "predicted_lines": row["predicted_lines"],
-                "line_count_mismatch": row["line_count_mismatch"],
-                "cell_count_mismatch": row["cell_count_mismatch"],
-                "exact_sample_match": row["exact_sample_match"],
-                "line_reconstruction_accuracy": round(
-                    row["line_reconstruction_accuracy"], 4
-                ),
-                "confidence": round(row["confidence"], 4),
-                "ms": round(row["ms"], 1),
-                "flag_categories": sorted(row["flag_categories"]),
-                "failed": row["failed"],
-            }
-            for row in rows
-        ],
     }
+    if english_rows:
+        report["english_summary"] = {
+            "n": len(english_rows),
+            "mean_english_cer": round(
+                _mean([r["english_cer"] for r in english_rows]), 4
+            ),
+            "median_english_cer": round(
+                median(r["english_cer"] for r in english_rows), 4
+            ),
+            "mean_english_wer": round(
+                _mean([r["english_wer"] for r in english_rows]), 4
+            ),
+            "median_english_wer": round(
+                median(r["english_wer"] for r in english_rows), 4
+            ),
+            "note": (
+                "Supplementary English CER/WER via Liblouis Grade 2 "
+                "back-translation. Reference text is derived from the "
+                "expected rawBraille cells, not from a separately authored "
+                "English transcript. Scores reflect both visual pipeline "
+                "accuracy and Liblouis translation quality."
+            ),
+        }
+    sample_entries = []
+    for row in rows:
+        entry = {
+            "label": row["label"],
+            "category": row["category"],
+            "variant": row["variant"],
+            "capture_type": row["capture_type"],
+            "cell_error_rate": round(row["cell_error_rate"], 4),
+            "rawbraille_cer": round(row["rawbraille_cer"], 4),
+            "expected_lines": row["expected_lines"],
+            "predicted_lines": row["predicted_lines"],
+            "line_count_mismatch": row["line_count_mismatch"],
+            "cell_count_mismatch": row["cell_count_mismatch"],
+            "exact_sample_match": row["exact_sample_match"],
+            "line_reconstruction_accuracy": round(
+                row["line_reconstruction_accuracy"], 4
+            ),
+            "confidence": round(row["confidence"], 4),
+            "ms": round(row["ms"], 1),
+            "flag_categories": sorted(row["flag_categories"]),
+            "failed": row["failed"],
+        }
+        if "english_cer" in row:
+            entry["english_cer"] = round(row["english_cer"], 4)
+            entry["english_wer"] = round(row["english_wer"], 4)
+        sample_entries.append(entry)
+    report["samples"] = sample_entries
+    return report
 
 
 def run(dataset: str, runs: int, write_report: Path | None) -> int:
     spec = get_spec(dataset)
     run_id = _run_id()
+    english_scoring = _english_scoring_available()
+    settings = get_settings()
     print(f"dataset={spec.name} capture_type={spec.capture_type} "
           f"grade_mode={spec.grade_mode} evaluation_mode={spec.evaluation_mode} "
           f"run_id={run_id}")
     print(_CAPTURE_BANNERS[spec.capture_type])
+    if english_scoring:
+        print(
+            f"english_scoring=True (Liblouis Grade 2 via {settings.liblouis_table} "
+            "- supplementary English CER/WER will be computed)"
+        )
 
     samples = discover_dataset(spec)
     if not samples:
@@ -304,21 +385,24 @@ def run(dataset: str, runs: int, write_report: Path | None) -> int:
         print(f"\n{len(samples)} sample(s) present but none evaluable - fix the above.")
         return 0
 
-    print()
-    print(
+    header = (
         f"{'sample':<40} {'cellER':>7} {'rawCER':>7} {'dLine':>5} "
         f"{'dCell':>5} {'exact':>6} {'conf':>6} {'ms':>7}"
     )
-    rows = [_evaluate(sample, runs) for sample in evaluable]
+    if english_scoring:
+        header += f" {'engCER':>7} {'engWER':>7}"
+    print()
+    print(header)
+    rows = [_evaluate(sample, runs, english_scoring=english_scoring) for sample in evaluable]
     for row in rows:
-        _print_row(row)
+        _print_row(row, english=english_scoring)
 
     failed = [r for r in rows if r["failed"]]
     exact = [r for r in rows if r["exact_sample_match"]]
     print()
     print(
         f"=== cell-level summary ({spec.capture_type}; rawBraille vs expected "
-        "cells; NOT English) ==="
+        "cells) ==="
     )
     print(
         f"samples={len(samples)} evaluated={len(rows)} skipped={len(skipped)} "
@@ -346,6 +430,27 @@ def run(dataset: str, runs: int, write_report: Path | None) -> int:
         f"repeatable_all={all(r['repeatable'] for r in rows)}"
     )
 
+    english_rows = [r for r in rows if "english_cer" in r]
+    if english_rows:
+        print()
+        print(
+            f"=== supplementary English CER/WER (via Liblouis "
+            f"{settings.liblouis_table}) ==="
+        )
+        print(
+            f"n={len(english_rows)} "
+            f"mean_english_CER={_mean([r['english_cer'] for r in english_rows]):.3f} "
+            f"median={median(r['english_cer'] for r in english_rows):.3f} "
+            f"mean_english_WER={_mean([r['english_wer'] for r in english_rows]):.3f} "
+            f"median={median(r['english_wer'] for r in english_rows):.3f}"
+        )
+        print(
+            "caveat: English reference text is derived from expected rawBraille "
+            "via Liblouis, not from a separately authored transcript. Scores "
+            "reflect both visual pipeline accuracy and Liblouis translation "
+            "quality."
+        )
+
     print()
     print("hardest categories (mean cell error rate, worst first):")
     for cat, cer, n in _hardest_categories(rows):
@@ -361,11 +466,23 @@ def run(dataset: str, runs: int, write_report: Path | None) -> int:
             print(f"  {category}={count}")
 
     print()
-    print("english_cer_wer_computed=False (Grade 2 English transcription is out of scope)")
+    if english_scoring:
+        print(
+            f"english_cer_wer_computed=True "
+            f"(supplementary, via Liblouis {settings.liblouis_table})"
+        )
+    else:
+        print(
+            "english_cer_wer_computed=False (Liblouis Grade 2 not available - "
+            "configure LIBLOUIS_TABLE=en-ueb-g2.ctb to enable)"
+        )
     print(f"note: {REPORT_NOTE}")
 
     if write_report is not None:
-        report = _build_report(spec, rows, len(samples), len(skipped), run_id)
+        report = _build_report(
+            spec, rows, len(samples), len(skipped), run_id,
+            english_scoring=english_scoring,
+        )
         write_report.parent.mkdir(parents=True, exist_ok=True)
         write_report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(
