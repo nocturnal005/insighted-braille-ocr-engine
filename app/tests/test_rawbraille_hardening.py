@@ -111,14 +111,15 @@ def test_no_grade2_back_translation_support():
     # Behavioural lock: a Grade 2 contraction cell must NOT decode to its
     # English word. Dots {1,2,3,4,6} is the UEB "and" contraction; the
     # Grade 1 fallback must not know it.
-    from app.core.config import get_settings
+    from app.core.config import Settings
     from app.translation.fallback_translator import back_translate_unicode_lines
 
     and_contraction = dots_to_unicode_char(frozenset({1, 2, 3, 4, 6}))
     outcome = back_translate_unicode_lines([and_contraction])
     assert "and" not in outcome.text.lower()
-    # And the configured Liblouis table remains Grade 1.
-    assert "g1" in get_settings().liblouis_table.lower()
+    # And the default Liblouis table remains Grade 1 (Grade 2 is an explicit
+    # opt-in via LIBLOUIS_TABLE since Stage 3D-I1).
+    assert "g1" in Settings.model_fields["liblouis_table"].default.lower()
 
 
 # --- Metrics still intact after G4 ---------------------------------------------

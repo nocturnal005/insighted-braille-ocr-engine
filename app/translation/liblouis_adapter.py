@@ -32,7 +32,8 @@ def _ensure_dll_dir() -> None:
     dll_dir = settings.liblouis_dll_dir
     if dll_dir and Path(dll_dir).is_dir():
         try:
-            os.add_dll_directory(dll_dir)
+            # add_dll_directory rejects relative paths; the config may use one.
+            os.add_dll_directory(str(Path(dll_dir).resolve()))
         except (OSError, AttributeError):
             pass
 
@@ -48,7 +49,7 @@ def _resolve_table(table: str) -> str:
         return table
     candidate = Path(table_path) / table
     if candidate.is_file():
-        return str(candidate)
+        return str(candidate.resolve())
     return table
 
 

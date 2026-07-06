@@ -13,10 +13,7 @@ from __future__ import annotations
 import pytest
 
 from app.evaluation.rawbraille_metrics import sample_metrics
-from app.evaluation.run_rawbraille_evaluation import (
-    _build_report,
-    _english_scoring_available,
-)
+from app.evaluation.run_rawbraille_evaluation import _build_report
 from app.ocr.braille_decode import dots_to_unicode_char
 from app.translation.liblouis_adapter import is_grade2_table, liblouis_available
 
@@ -51,9 +48,9 @@ def test_fallback_translator_ignores_grade2_contractions():
 
 
 def test_default_config_is_grade1():
-    from app.core.config import get_settings
+    from app.core.config import Settings
 
-    assert "g1" in get_settings().liblouis_table.lower()
+    assert "g1" in Settings.model_fields["liblouis_table"].default.lower()
 
 
 def test_default_config_has_liblouis_path_settings():
@@ -67,8 +64,14 @@ def test_default_config_has_liblouis_path_settings():
 # --- English scoring gating ---------------------------------------------------
 
 
-def test_english_scoring_unavailable_with_default_g1_config():
-    assert _english_scoring_available() is False
+def test_english_scoring_unavailable_with_grade1_table(monkeypatch):
+    import app.evaluation.run_rawbraille_evaluation as harness
+    from app.core.config import Settings
+
+    monkeypatch.setattr(
+        harness, "get_settings", lambda: Settings(liblouis_table="en-ueb-g1.ctb")
+    )
+    assert harness._english_scoring_available() is False
 
 
 # --- Report schema with and without English scoring ---------------------------
@@ -123,6 +126,10 @@ def test_report_with_english_scoring():
     assert summary["mean_english_wer"] == 0.10
     assert "note" in summary
     assert "supplementary" in summary["note"].lower()
+    # The top-level note must not contradict the English scoring: no claim
+    # that contractions are uninterpreted when Liblouis Grade 2 computed them.
+    assert "does not interpret" not in report["note"].lower()
+    assert "supplementary" in report["note"].lower()
     for sample in report["samples"]:
         assert "english_cer" in sample
         assert "english_wer" in sample
@@ -134,6 +141,17 @@ needs_liblouis = pytest.mark.skipif(
     not liblouis_available(),
     reason="Liblouis DLL and tables not installed locally",
 )
+
+
+@needs_liblouis
+def test_english_scoring_available_with_grade2_table(monkeypatch):
+    import app.evaluation.run_rawbraille_evaluation as harness
+    from app.core.config import Settings
+
+    monkeypatch.setattr(
+        harness, "get_settings", lambda: Settings(liblouis_table="en-ueb-g2.ctb")
+    )
+    assert harness._english_scoring_available() is True
 
 
 @needs_liblouis

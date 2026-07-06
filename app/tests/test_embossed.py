@@ -151,13 +151,19 @@ def test_embossed_round_trip(name):
     assert "low_image_quality" in categories  # embossed-photo mode is flagged
 
 
-def test_confidence_caps_are_honest():
+def test_confidence_caps_are_honest(monkeypatch):
     # Embossed runs never exceed the emboss cap...
     text, style = STYLE_BY_NAME["embossed_01_clean"]
     embossed = run_ocr(OcrRequest(**embossed_payload(text, style)))
     assert embossed.confidence <= EMBOSS_MODE_CAP
     # ...and even a perfect clean scan stays below 1.0 while the fallback
-    # (non-Liblouis) translator is in use.
+    # (non-Liblouis) translator is in use. Force the fallback so the
+    # assertion holds even on machines with Liblouis installed (Stage 3D-I1).
+    import app.ocr.pipeline as pipeline_module
+
+    monkeypatch.setattr(
+        pipeline_module, "liblouis_back_translate", lambda *_args: None
+    )
     clean = run_ocr(OcrRequest(**make_payload("hello world")))
     assert clean.confidence <= FALLBACK_TRANSLATION_CAP
 

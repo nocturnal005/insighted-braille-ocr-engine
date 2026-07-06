@@ -63,12 +63,19 @@ from app.translation.liblouis_adapter import (
 
 MIME_BY_EXTENSION = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
-REPORT_SCHEMA_VERSION = "1.1"  # 1.1: Stage 3D-G5 dataset descriptor + scope fields
+REPORT_SCHEMA_VERSION = "1.2"  # 1.2: Stage 3D-I1 optional English CER/WER fields
 REPORT_NOTE = (
     "Cell-level (rawBraille) validation only. This is NOT English Grade 2 "
     "transcription accuracy - the engine does not interpret contractions. "
     "OCR output is draft-only; QTVI/Braille-literate specialist verification "
     "remains mandatory."
+)
+REPORT_NOTE_ENGLISH = (
+    "Cell-level (rawBraille) validation is the primary metric. Supplementary "
+    "English CER/WER was computed via Liblouis Grade 2 back-translation; it "
+    "reflects both visual pipeline accuracy and Liblouis translation quality "
+    "and is not certified transcription accuracy. OCR output is draft-only; "
+    "QTVI/Braille-literate specialist verification remains mandatory."
 )
 
 _CAPTURE_BANNERS = {
@@ -244,18 +251,18 @@ def _build_report(
     for row in rows:
         flag_counts.update(row["flag_categories"])
     english_rows = [r for r in rows if "english_cer" in r]
+    english_computed = english_scoring and bool(english_rows)
     report: dict = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "engine_version": get_settings().service_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
         "dataset": _dataset_descriptor(spec),
-        "english_cer_wer_computed": english_scoring and bool(english_rows),
+        "english_cer_wer_computed": english_computed,
         "grade2_english_transcription": (
-            "supplementary_via_liblouis" if english_scoring and english_rows
-            else "out_of_scope"
+            "supplementary_via_liblouis" if english_computed else "out_of_scope"
         ),
-        "note": REPORT_NOTE,
+        "note": REPORT_NOTE_ENGLISH if english_computed else REPORT_NOTE,
         "capture_type_note": _CAPTURE_BANNERS[spec.capture_type],
         "counts": {
             "samples": samples,
@@ -466,7 +473,7 @@ def run(dataset: str, runs: int, write_report: Path | None) -> int:
             print(f"  {category}={count}")
 
     print()
-    if english_scoring:
+    if english_rows:
         print(
             f"english_cer_wer_computed=True "
             f"(supplementary, via Liblouis {settings.liblouis_table})"
@@ -476,7 +483,7 @@ def run(dataset: str, runs: int, write_report: Path | None) -> int:
             "english_cer_wer_computed=False (Liblouis Grade 2 not available - "
             "configure LIBLOUIS_TABLE=en-ueb-g2.ctb to enable)"
         )
-    print(f"note: {REPORT_NOTE}")
+    print(f"note: {REPORT_NOTE_ENGLISH if english_rows else REPORT_NOTE}")
 
     if write_report is not None:
         report = _build_report(
