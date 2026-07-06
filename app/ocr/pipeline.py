@@ -47,7 +47,7 @@ from app.ocr.image_decode import SUPPORTED_MIME_TYPES, ImageDecodeError, decode_
 from app.ocr.line_reconstruction import reconstruct_lines
 from app.ocr.preprocessing import MODE_EMBOSS, preprocess
 from app.translation.fallback_translator import back_translate_unicode_lines
-from app.translation.liblouis_adapter import liblouis_back_translate
+from app.translation.liblouis_adapter import is_grade2_table, liblouis_back_translate
 
 logger = get_logger(__name__)
 
@@ -241,6 +241,19 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
                 translation_completeness = 1.0 - (
                     remaining_braille / max(len(liblouis_text), 1)
                 )
+                if is_grade2_table(settings.liblouis_table):
+                    flags.append(
+                        make_flag(
+                            text="",
+                            reason=(
+                                "Back-translation used Liblouis with a Grade 2 "
+                                "(contracted) UEB table. Contractions were "
+                                "interpreted but the result is an unverified draft."
+                            ),
+                            category=CATEGORY_POSSIBLE_CONTRACTION_ISSUE,
+                            severity="low",
+                        )
+                    )
         if not used_liblouis:
             fallback = back_translate_unicode_lines(unicode_lines)
             draft_text = fallback.text
@@ -331,7 +344,8 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
         duration_ms = int((perf_counter() - started) * 1000)
         logger.info(
             "ocr_completed request_id=%s task_ref=%s mime=%s bytes=%d mode=%s dots=%d "
-            "cells=%d lines=%d liblouis=%s confidence=%.3f flags=%d duration_ms=%d",
+            "cells=%d lines=%d liblouis=%s table=%s confidence=%.3f flags=%d "
+            "duration_ms=%d",
             request_id,
             _task_ref(request.taskId),
             _safe_mime_for_log(request.mimeType),
@@ -341,6 +355,7 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
             grouping.total_cells,
             len(grouping.lines),
             used_liblouis,
+            settings.liblouis_table if used_liblouis else "none",
             confidence,
             len(flags),
             duration_ms,

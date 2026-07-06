@@ -203,10 +203,13 @@ def test_ocr_contract_unchanged():
 
 
 def test_still_no_grade2_english_translation():
-    from app.core.config import get_settings
+    # The built-in fallback still ignores contractions, and the *default*
+    # Liblouis table remains Grade 1 (Grade 2 is an explicit opt-in via
+    # LIBLOUIS_TABLE since Stage 3D-I1).
+    from app.core.config import Settings
     from app.translation.fallback_translator import back_translate_unicode_lines
 
     and_contraction = dots_to_unicode_char(frozenset({1, 2, 3, 4, 6}))
     outcome = back_translate_unicode_lines([and_contraction])
     assert "and" not in outcome.text.lower()
-    assert "g1" in get_settings().liblouis_table.lower()
+    assert "g1" in Settings.model_fields["liblouis_table"].default.lower()

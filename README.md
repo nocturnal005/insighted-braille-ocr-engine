@@ -143,7 +143,9 @@ Copy `.env.example` to `.env` and adjust. Key settings:
 | `MAX_IMAGE_PIXELS`   | `40000000`       | Decompression-bomb guard                         |
 | `LOG_LEVEL`          | `INFO`           | Logging level (metadata only — see below)        |
 | `LIBLOUIS_ENABLED`   | `true`           | Attempt Liblouis back-translation if installed   |
-| `LIBLOUIS_TABLE`     | `en-ueb-g1.ctb`  | Liblouis table to use                            |
+| `LIBLOUIS_TABLE`     | `en-ueb-g1.ctb`  | Liblouis table (`en-ueb-g2.ctb` for Grade 2)    |
+| `LIBLOUIS_DLL_DIR`   | *(empty)*        | Directory containing `liblouis.dll` (Windows)    |
+| `LIBLOUIS_TABLE_PATH`| *(empty)*        | Directory containing Liblouis `.ctb` tables      |
 | `DEMO_PAGE_ENABLED`  | `false`          | Serve the local demo page at `/demo` (local use only) |
 
 **Authentication:** when `OCR_ENGINE_API_KEY` is set, `POST /ocr` accepts
@@ -200,6 +202,16 @@ task ids, pupil data, or API keys.
 Liblouis is **not** image OCR — it only back-translates the already-detected
 Braille cells. If it is not installed, nothing crashes; the response still
 carries `rawBraille`/`rawCells` and a clear uncertainty flag.
+
+### Liblouis Grade 2 back-translation (Stage 3D-I1)
+
+When Liblouis is installed locally and configured with `LIBLOUIS_TABLE=en-ueb-g2.ctb`,
+the engine interprets Grade 2 (contracted) UEB via Liblouis. The result
+carries a `possible_contraction_issue` flag noting that contractions were
+interpreted but the output remains an unverified draft. The built-in Grade 1
+fallback is used when Liblouis is absent or fails. See
+[docs/stage_3d_i1_liblouis_grade2_integration.md](docs/stage_3d_i1_liblouis_grade2_integration.md)
+for setup and evaluation details.
 
 ## Samples and evaluation
 
@@ -397,4 +409,4 @@ Dockerfile, .env.example, limitations.md
 Read [limitations.md](limitations.md). Headline: output is **draft-only and
 requires QTVI or Braille-literate specialist verification**; v1 handles
 clear dark-dot images (not embossed-paper photographs), PNG/JPEG only, no
-PDF, Grade 1 back-translation fallback, single page.
+PDF, Grade 1 fallback (Grade 2 via optional Liblouis), single page.

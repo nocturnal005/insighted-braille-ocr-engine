@@ -18,12 +18,16 @@ verification.
 - **Single page:** every image is treated as one page (`pageResults` always
   contains one entry).
 - **6-dot Braille only:** 8-dot Braille is not recognised.
-- **Grade 1 (uncontracted) UEB back-translation:** the built-in fallback
-  translator handles letters, the capital sign, the number sign with digits,
-  and a small punctuation set (comma, full stop, apostrophe, hyphen).
-  **Grade 2 contractions are not interpreted** and will decode incorrectly
-  (each contraction appears as its literal letter or `?`). A
-  `possible_contraction_issue` flag records this on every draft.
+- **Grade 1 (uncontracted) UEB back-translation (fallback):** the built-in
+  fallback translator handles letters, the capital sign, the number sign
+  with digits, and a small punctuation set (comma, full stop, apostrophe,
+  hyphen). **Grade 2 contractions are not interpreted by the fallback** and
+  will decode incorrectly (each contraction appears as its literal letter
+  or `?`). A `possible_contraction_issue` flag records this on every draft.
+- **Grade 2 (contracted) UEB via Liblouis (optional, Stage 3D-I1):** when
+  Liblouis is installed and configured with `LIBLOUIS_TABLE=en-ueb-g2.ctb`,
+  the engine interprets Grade 2 contractions. The result is still an
+  unverified draft requiring specialist verification.
 - **Liblouis is optional and not bundled.** When the python `louis` bindings
   and tables are installed, the engine uses Liblouis for back-translation of
   the detected Unicode Braille (Liblouis is not image OCR). When absent, the
@@ -106,7 +110,9 @@ verification.
   validation on real embossed photographs (with permissions, anonymised)
   is the next step.
 - PDF intake and multi-page handling.
-- Grade 2 (contracted) UEB awareness in the fallback translator.
+- ~~Grade 2 (contracted) UEB awareness.~~ Added in v0.5.0 (Stage 3D-I1)
+  via optional Liblouis integration. The built-in fallback translator
+  remains Grade 1 only.
 - Confidence calibration against ground-truth error rates.
 - Word-level flags anchored to text spans (`flags[].text` is currently empty
   for whole-image flags and holds a single cell/letter for cell-level flags).
