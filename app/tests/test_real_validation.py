@@ -212,8 +212,10 @@ def test_real_evaluation_full_run_is_safe_and_grouped(dataset_dirs, capsys):
         style=EmbossedStyle(relief=10.0),
         metadata=dict(GOOD_METADATA, lighting="low_light", contrast="low"),
     )
-    # Below the resolution floor: controlled failure exercises the failed
-    # bucket (seed 7 matches the deterministic failure in test_embossed).
+    # Near the resolution floor. Pre-K2 this failed outright; the K2 lattice
+    # fallback now recovers it to a low-confidence, high-severity-flagged
+    # draft (honest, not overconfident — see test_embossed), so it no longer
+    # lands in the failed/no-draft bucket.
     add_sample(
         dataset_dirs,
         "real_003_tiny_dots",
@@ -245,7 +247,7 @@ def test_real_evaluation_full_run_is_safe_and_grouped(dataset_dirs, capsys):
 
     # diagnostic sections
     assert "diagnostic summary" in out
-    assert "samples=5 evaluated=4 skipped=1 failed=1" in out
+    assert "samples=5 evaluated=4 skipped=1 failed=0" in out
     assert "error buckets" in out
     assert "failed / no draft" in out
     assert "calibration:" in out

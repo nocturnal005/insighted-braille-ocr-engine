@@ -185,8 +185,11 @@ task ids, pupil data, or API keys.
 4. **Cell grouping** — grid fitting of the 2×3 Braille cell structure:
    estimates dot pitch and cell advance, resolves the column-anchor
    ambiguity, corrects residual skew measured from the dot geometry,
-   rescues collapsed dot rows (or fails safely when they cannot be
-   separated), and assigns dots to numbered positions 1–6.
+   rescues collapsed dot rows, and assigns dots to numbered positions 1–6.
+   When single-linkage row clustering fails on a dense/curved real capture
+   whose dots still lie on a regular pitch, a lattice-projection fallback
+   recovers the rows (Stage 3D-K2) — gated by spacing regularity so noise is
+   never turned into a grid; genuinely unresolvable pages still fail safely.
 5. **Line reconstruction** — orders lines and cells, derives word spacing
    from blank grid cells, emits `rawCells`.
 6. **Braille decoding** — dot patterns → Unicode Braille (`rawBraille`).

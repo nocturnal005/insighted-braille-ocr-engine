@@ -27,8 +27,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from statistics import median
 
+import numpy as np
+
 from app.models.responses import Flag
-from app.ocr.dot_detection import Dot
+from app.ocr.dot_detection import Dot, spacing_regularity
 from app.ocr.flags import (
     CATEGORY_LINE_ORDER_UNCERTAINTY,
     CATEGORY_LOW_IMAGE_QUALITY,
@@ -55,6 +57,7 @@ class GroupingResult:
     line_quality: float = 0.0  # line/row-order certainty in [0, 1]
     flags: list[Flag] = field(default_factory=list)
     total_cells: int = 0
+    recovered_via_fallback: bool = False  # rows recovered by lattice fallback (K2)
 
 
 def _cluster_1d(items: list, key, threshold: float) -> list[list]:
@@ -161,6 +164,101 @@ def _estimate_residual_skew(rows: list[list[Dot]], u_v: float) -> float:
 
 def _max_row_spread(rows: list[list[Dot]]) -> float:
     return max(max(d.y for d in row) - min(d.y for d in row) for row in rows)
+
+
+# Fallback row recovery (Stage 3D-K2) for real captures whose dots form a
+# regular vertical pitch but defeat single-linkage row clustering — dense
+# pages, mild curvature/perspective, and slight residual skew chain adjacent
+# rows across the frame, so one merged cluster trips the global spread gate
+# even though the dots plainly lie on a lattice. This path is tried ONLY when
+# the normal clustering has already failed, so it can never change a page that
+# currently groups successfully (e.g. controlled renders); it can only turn a
+# would-be empty failure into a recovered, honestly-flagged draft.
+_LATTICE_MAX_RESIDUAL_RATIO = 0.30  # median dot within ~1/3 pitch of its row
+_LATTICE_MIN_DOTS = 12
+# A low residual ratio alone cannot reject noise: uniformly-random points
+# projected onto any lattice have a median residual near 0.25 of the pitch, so
+# random specks slip through. Nearest-neighbour spacing regularity is the
+# discriminator that does not — real Braille dots sit on a fixed pitch
+# (regularity ~0.72-0.84 measured), random noise is far lower (~0.51). The
+# floor sits above that noise level and below every real capture measured,
+# and above the pipeline's existing "inconsistent spacing" flag at 0.55.
+_LATTICE_MIN_SPACING_REGULARITY = 0.60
+
+
+def _estimate_vertical_pitch(dots: list[Dot], r_med: float) -> float | None:
+    """Robust within-column vertical dot pitch, independent of row clustering.
+
+    For each dot, the downward distance to the nearest dot in the same column
+    (|dx| within a dot width) is a within-column vertical gap. The smallest
+    consistent population of those gaps is the vertical dot pitch. Because it
+    never clusters along y and only looks at local same-column neighbours, it
+    is immune to the row-chaining that breaks single-linkage clustering, and
+    to mild skew. Returns None when there is too little signal.
+    """
+    if len(dots) < _LATTICE_MIN_DOTS:
+        return None
+    xs = np.fromiter((d.x for d in dots), dtype=np.float64, count=len(dots))
+    ys = np.fromiter((d.y for d in dots), dtype=np.float64, count=len(dots))
+    same_col = max(2.0, 1.2 * r_med)
+    gaps: list[float] = []
+    for i in range(len(dots)):
+        dx = np.abs(xs - xs[i])
+        dy = ys - ys[i]
+        mask = (dx <= same_col) & (dy > 1e-6)
+        if bool(mask.any()):
+            gaps.append(float(dy[mask].min()))
+    if len(gaps) < 4:
+        return None
+    return _estimate_unit(gaps, fallback=3.0 * r_med)
+
+
+def _lattice_rows(
+    dots: list[Dot], u_v: float
+) -> tuple[list[list[Dot]], list[float], float]:
+    """Assign dots to rows by projecting onto a regular vertical lattice.
+
+    Each dot's row is ``round((y - y0) / u_v)`` — a lattice position, not a
+    proximity cluster, so adjacent rows cannot chain together. Returns the
+    occupied rows (top to bottom), their centres, and the median per-dot
+    residual as a fraction of the pitch (how well the dots fit the lattice).
+    """
+    y0 = min(d.y for d in dots)
+    indexed = [(d, int(round((d.y - y0) / u_v))) for d in dots]
+    residuals = [abs((d.y - y0) - idx * u_v) for d, idx in indexed]
+    median_ratio = median(residuals) / max(u_v, 1e-6)
+    bands: dict[int, list[Dot]] = {}
+    for dot, idx in indexed:
+        bands.setdefault(idx, []).append(dot)
+    ordered = sorted(bands)
+    rows = [bands[i] for i in ordered]
+    row_centers = [sum(d.y for d in row) / len(row) for row in rows]
+    return rows, row_centers, median_ratio
+
+
+def _recover_rows_by_lattice(
+    dots: list[Dot], r_med: float
+) -> tuple[list[list[Dot]], list[float], float] | None:
+    """Fallback row structure for dot-rich captures that defeat clustering.
+
+    Returns ``(rows, row_centers, u_v)`` when the dots lie on a regular
+    vertical lattice, or None — keeping the safe empty failure — when they do
+    not (genuine noise, or blur so severe that no periodic structure exists).
+    """
+    if len(dots) < _LATTICE_MIN_DOTS:
+        return None
+    # Reject noise/texture before trusting a lattice fit (see the constant).
+    if spacing_regularity(dots) < _LATTICE_MIN_SPACING_REGULARITY:
+        return None
+    u_v = _estimate_vertical_pitch(dots, r_med)
+    # A plausible Braille dot pitch is a few dot radii; anything tighter is a
+    # bad estimate that would split single rows in two.
+    if u_v is None or u_v < 2.0 * r_med:
+        return None
+    rows, row_centers, median_ratio = _lattice_rows(dots, u_v)
+    if len(rows) < 2 or median_ratio >= _LATTICE_MAX_RESIDUAL_RATIO:
+        return None
+    return rows, row_centers, u_v
 
 
 def _line_lifts(
@@ -288,34 +386,54 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
             break
         rows, row_centers, u_v = retry
 
+    recovered_via_lattice = False
     if _max_row_spread(rows) > 0.8 * u_v:
-        # Rows remain merged: any dot-to-slot assignment would be a guess.
-        # Fail safely — empty result, honest flags — rather than emit
-        # confidently-wrong text for a specialist to untangle.
-        return GroupingResult(
-            flags=dedupe_flags(
-                flags
-                + [
-                    make_flag(
-                        text="",
-                        reason=(
-                            "Braille dot rows could not be separated reliably "
-                            "(dots too tightly spaced or too blurred for this "
-                            "image resolution); no draft could be produced."
+        # Single-linkage clustering left rows merged. Before failing, try the
+        # lattice fallback (Stage 3D-K2): dot-rich real captures often defeat
+        # proximity clustering yet lie on a perfectly regular vertical pitch.
+        recovery = _recover_rows_by_lattice(dots, r_med)
+        if recovery is None:
+            # No regular lattice either: any dot-to-slot assignment would be a
+            # guess. Fail safely — empty result, honest flags — rather than
+            # emit confidently-wrong text for a specialist to untangle.
+            return GroupingResult(
+                flags=dedupe_flags(
+                    flags
+                    + [
+                        make_flag(
+                            text="",
+                            reason=(
+                                "Braille dot rows could not be separated reliably "
+                                "(dots too tightly spaced or too blurred for this "
+                                "image resolution); no draft could be produced."
+                            ),
+                            category=CATEGORY_LINE_ORDER_UNCERTAINTY,
+                            severity="high",
                         ),
-                        category=CATEGORY_LINE_ORDER_UNCERTAINTY,
-                        severity="high",
-                    ),
-                    make_flag(
-                        text="",
-                        reason=(
-                            "Try a higher-resolution, flatter photograph with "
-                            "the Braille area filling more of the frame."
+                        make_flag(
+                            text="",
+                            reason=(
+                                "Try a higher-resolution, flatter photograph with "
+                                "the Braille area filling more of the frame."
+                            ),
+                            category=CATEGORY_LOW_IMAGE_QUALITY,
+                            severity="medium",
                         ),
-                        category=CATEGORY_LOW_IMAGE_QUALITY,
-                        severity="medium",
-                    ),
-                ]
+                    ]
+                )
+            )
+        rows, row_centers, u_v = recovery
+        recovered_via_lattice = True
+        flags.append(
+            make_flag(
+                text="",
+                reason=(
+                    "Standard row separation failed; row structure was recovered "
+                    "using a fallback lattice method. Line and cell boundaries are "
+                    "uncertain and the draft must be checked especially carefully."
+                ),
+                category=CATEGORY_LINE_ORDER_UNCERTAINTY,
+                severity="medium",
             )
         )
 
@@ -341,9 +459,13 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
             line_groups[-1].append(i)
 
     # --- Assign row indices (0-2) within each line, collect columns ---------
-    # A collapse rescue means the row structure was ambiguous: line quality
-    # starts below 1 so the final confidence reflects that uncertainty.
+    # A collapse rescue or lattice recovery means the row structure was
+    # ambiguous: line quality starts below 1 so the final confidence reflects
+    # that uncertainty (the lattice fallback caps it harder — it only runs
+    # when normal separation failed outright).
     line_quality = 1.0 - 0.15 * collapse_retries
+    if recovered_via_lattice:
+        line_quality = min(line_quality, 0.5)
     # Anchor each line to the page line ladder so a line that uses only the
     # middle/lower rows (e.g. all comma cells) is not read one row too high.
     lifts = _line_lifts(line_groups, row_centers, u_v)
@@ -480,4 +602,5 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
         line_quality=line_quality,
         flags=dedupe_flags(flags),
         total_cells=total_cells,
+        recovered_via_fallback=recovered_via_lattice,
     )

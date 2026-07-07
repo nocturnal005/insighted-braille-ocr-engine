@@ -26,6 +26,13 @@ _WEIGHTS = {
 # deliberately conservative: output is a draft for specialist review either way.
 EMBOSS_MODE_CAP = 0.82
 FALLBACK_TRANSLATION_CAP = 0.95
+# Stage 3D-K2: a page whose rows were recovered by the lattice fallback only
+# got a draft because normal row separation failed outright. That is inherently
+# low-trust — the recovered row/line structure can still be wrong (pitch
+# aliasing, tight interline spacing, or a regular non-Braille texture that
+# slipped the spacing-regularity gate). Cap hard, below the emboss cap, so such
+# a draft can never read as confident regardless of how cleanly its columns fit.
+LATTICE_RECOVERY_CAP = 0.55
 
 # Dot-size honesty (Stage 3D-G2): decoding degrades sharply as dots approach
 # the ~6 px readable floor, but none of the blend factors senses absolute

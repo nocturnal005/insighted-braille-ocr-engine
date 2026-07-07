@@ -24,7 +24,11 @@ from app.evaluation.sample_generator import (
     render_embossed_braille_image,
 )
 from app.models.requests import OcrRequest
-from app.ocr.confidence import EMBOSS_MODE_CAP, FALLBACK_TRANSLATION_CAP
+from app.ocr.confidence import (
+    EMBOSS_MODE_CAP,
+    FALLBACK_TRANSLATION_CAP,
+    LATTICE_RECOVERY_CAP,
+)
 from app.ocr.image_decode import decode_data_url
 from app.ocr.pipeline import _select_variant, run_ocr
 from app.ocr.preprocessing import MODE_DARK, MODE_EMBOSS, preprocess
@@ -171,14 +175,18 @@ def test_confidence_caps_are_honest(monkeypatch):
 # --- Controlled failure ------------------------------------------------------
 
 
-def test_unresolvable_tight_spacing_fails_safely():
-    # unit 9 with radius-3 dots is below the resolution floor: dot rows
-    # cannot be separated. The engine must return an empty draft with an
-    # honest high-severity flag — never confidently-wrong text.
+def test_tight_spacing_recovers_but_stays_honest():
+    # unit 9 with radius-3 dots sits near the ~6px readable floor. Single-
+    # linkage row separation used to fail outright here; the Stage 3D-K2
+    # lattice fallback now recovers the regular row structure. Recovery must
+    # stay HONEST: confidence is capped by the lattice-recovery cap (the
+    # K2-specific ceiling, not merely the incidental emboss cap) and a
+    # high-severity flag fires — a draft for specialist review, never
+    # confidently-wrong text presented as reliable.
     style = EmbossedStyle(unit=9, dot_radius=3)
     response = run_ocr(OcrRequest(**embossed_payload("tight dot spacing", style)))
-    assert response.draftText == ""
-    assert response.confidence == 0.0
+    assert response.draftText != ""  # recovered to a draft (was empty pre-K2)
+    assert response.confidence <= LATTICE_RECOVERY_CAP  # K2 recovery cap
     assert any(flag.severity == "high" for flag in response.flags)
 
 

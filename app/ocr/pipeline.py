@@ -25,6 +25,7 @@ from app.ocr.cell_grouping import GroupingResult, group_dots
 from app.ocr.confidence import (
     EMBOSS_MODE_CAP,
     FALLBACK_TRANSLATION_CAP,
+    LATTICE_RECOVERY_CAP,
     combined_confidence,
     dot_size_cap,
     noise_ratio_factor,
@@ -317,6 +318,11 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
                 confidence = min(confidence, size_cap)
         if not used_liblouis:
             confidence = min(confidence, FALLBACK_TRANSLATION_CAP)
+        # A lattice-recovered page only decoded because normal row separation
+        # failed; cap it hard so a clean column fit cannot make a last-ditch
+        # recovery read as confident (Stage 3D-K2).
+        if grouping.recovered_via_fallback:
+            confidence = min(confidence, LATTICE_RECOVERY_CAP)
 
         if confidence < 0.55:
             flags.append(
