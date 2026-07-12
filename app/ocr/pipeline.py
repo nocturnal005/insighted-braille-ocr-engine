@@ -13,6 +13,7 @@ transcription text, titles, file names, raw task ids, or pupil data.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace as dataclass_replace
 from time import perf_counter
 from uuid import uuid4
 
@@ -23,6 +24,7 @@ from app.models.responses import Flag, OcrResponse, PageResult
 from app.ocr.braille_decode import token_lines_to_unicode
 from app.ocr.capture_normalization import detect_with_normalisation
 from app.ocr.cell_grouping import GroupingResult, group_dots
+from app.ocr.dot_evidence import refine_grouping
 from app.ocr.confidence import (
     EMBOSS_MODE_CAP,
     FALLBACK_TRANSLATION_CAP,
@@ -223,6 +225,21 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
                 int((perf_counter() - started) * 1000),
             )
             return _failure_response(request_id, flags)
+
+        # --- Stage 5b: grid-evidence re-scoring (Stage 3D-M1) -------------------
+        # Re-read each fitted cell's dot pattern directly from the image at
+        # the exact slot positions. Fail-closed: when evidence cannot even
+        # confirm the blob-detected dots, the page passes through unchanged.
+        refinement = refine_grouping(detection, grouping)
+        if refinement.applied and refinement.cells_changed:
+            grouping = dataclass_replace(
+                grouping,
+                lines=refinement.lines,
+                total_cells=refinement.total_cells,
+            )
+            flags.extend(refinement.flags)
+            if grouping.total_cells == 0:
+                return _failure_response(request_id, flags)
 
         token_lines, raw_cells, reconstruction_flags = reconstruct_lines(grouping)
         flags.extend(reconstruction_flags)

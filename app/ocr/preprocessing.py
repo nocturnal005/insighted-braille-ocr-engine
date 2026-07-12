@@ -42,6 +42,11 @@ class BinaryVariant:
     binary: np.ndarray  # uint8, dots white (255) on black (0)
     quality: float  # heuristic image quality in [0, 1]
     deskewed: bool
+    # Original grayscale warped by this variant's own deskew, so it is
+    # pixel-aligned with `binary` (and therefore with every dot coordinate
+    # derived from it). Grid-evidence scoring (Stage 3D-M1) samples this
+    # image at exact slot positions; None only in legacy construction paths.
+    aligned_gray: np.ndarray | None = None
 
 
 @dataclass
@@ -73,17 +78,19 @@ def _threshold(enhanced: np.ndarray) -> np.ndarray:
     )
 
 
-def _deskew(binary: np.ndarray, enhanced: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool]:
+def _deskew(
+    binary: np.ndarray, enhanced: np.ndarray, gray: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, bool]:
     points = cv2.findNonZero(binary)
     if points is None or len(points) < 30:
-        return binary, enhanced, False
+        return binary, enhanced, gray, False
     angle = cv2.minAreaRect(points)[2]
     if angle > 45:
         angle -= 90
     elif angle < -45:
         angle += 90
     if not (0.7 <= abs(angle) <= 15):
-        return binary, enhanced, False
+        return binary, enhanced, gray, False
     h, w = binary.shape
     matrix = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
     binary = cv2.warpAffine(
@@ -92,7 +99,11 @@ def _deskew(binary: np.ndarray, enhanced: np.ndarray) -> tuple[np.ndarray, np.nd
     enhanced = cv2.warpAffine(
         enhanced, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=255
     )
-    return binary, enhanced, True
+    if gray is not None:
+        gray = cv2.warpAffine(
+            gray, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=255
+        )
+    return binary, enhanced, gray, True
 
 
 def _quality_score(gray: np.ndarray, enhanced: np.ndarray, binary: np.ndarray) -> float:
@@ -295,12 +306,16 @@ def preprocess(gray: np.ndarray) -> PreprocessResult:
         binary = cv2.bitwise_not(binary)
 
     enhanced_unrotated = enhanced.copy()
-    binary, enhanced, deskewed = _deskew(binary, enhanced)
+    binary, enhanced, dark_gray, deskewed = _deskew(binary, enhanced, gray)
     dark_quality = _quality_score(gray, enhanced, binary)
 
     variants = [
         BinaryVariant(
-            mode=MODE_DARK, binary=binary, quality=dark_quality, deskewed=deskewed
+            mode=MODE_DARK,
+            binary=binary,
+            quality=dark_quality,
+            deskewed=deskewed,
+            aligned_gray=dark_gray if dark_gray is not None else gray,
         )
     ]
 
@@ -310,13 +325,16 @@ def preprocess(gray: np.ndarray) -> PreprocessResult:
         # Quality is measured before deskew so binary, enhanced, and gray all
         # stay pixel-aligned; deskew only helps the geometric stages after.
         emboss_quality = _emboss_quality_score(gray, enhanced_unrotated, emboss)
-        emboss, _, emboss_deskewed = _deskew(emboss, enhanced_unrotated)
+        emboss, _, emboss_gray, emboss_deskewed = _deskew(
+            emboss, enhanced_unrotated, gray
+        )
         variants.append(
             BinaryVariant(
                 mode=MODE_EMBOSS,
                 binary=emboss,
                 quality=emboss_quality,
                 deskewed=emboss_deskewed,
+                aligned_gray=emboss_gray if emboss_gray is not None else gray,
             )
         )
 

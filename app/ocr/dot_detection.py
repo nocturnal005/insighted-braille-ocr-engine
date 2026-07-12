@@ -55,6 +55,10 @@ class DetectionOutcome:
     median_radius: float = 0.0  # median accepted dot radius in px (0 = none)
     noise_filtered: bool = False  # True when low-confidence dots were dropped
     flags: list[Flag] = field(default_factory=list)
+    # Grayscale pixel-aligned with the dot coordinates (the variant's own
+    # deskewed frame). In-memory only, for grid-evidence scoring; never
+    # serialised. None in legacy construction paths.
+    aligned_gray: np.ndarray | None = None
 
 
 # Per-dot confidence below which a candidate is dropped in the strict retry
@@ -162,6 +166,7 @@ def detect_variant(variant: BinaryVariant) -> DetectionOutcome:
         spacing_regularity=spacing_regularity(dots),
         raw_candidates=raw_candidates,
         median_radius=_median_radius(dots),
+        aligned_gray=variant.aligned_gray,
     )
 
 
@@ -189,6 +194,7 @@ def strict_variant(outcome: DetectionOutcome) -> DetectionOutcome | None:
         raw_candidates=outcome.raw_candidates,
         median_radius=_median_radius(strict),
         noise_filtered=True,
+        aligned_gray=outcome.aligned_gray,
     )
 
 

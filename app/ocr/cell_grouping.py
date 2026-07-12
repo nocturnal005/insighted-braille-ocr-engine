@@ -48,6 +48,46 @@ class CellCandidate:
     dots: tuple[int, ...]  # sorted dot numbers 1-6
     bbox: tuple[int, int, int, int]  # x1, y1, x2, y2
     confidence: float
+    # Fitted grid centres of all 6 dot slots for this cell, in grouping space
+    # (dot numbers 1-6 order). Grid-evidence scoring (Stage 3D-M1) samples
+    # the image at these exact positions instead of trusting blob detection.
+    slot_centers: tuple[tuple[float, float], ...] | None = None
+
+
+@dataclass
+class LineGrid:
+    """Fitted grid geometry for one Braille line (grouping space)."""
+
+    line_number: int  # matches CellCandidate.line_number
+    y_top: float  # y of dot row 0 (rows 1/2 at +u_v, +2*u_v)
+    origin_x: float  # x of column 0 of grid cell 0
+    first_cell_idx: int  # smallest observed grid index
+    last_cell_idx: int  # largest observed grid index
+
+
+@dataclass
+class PageGrid:
+    """Page-level fitted grid model exposed for evidence scoring.
+
+    Coordinates are in grouping space: the same frame as the dot coordinates
+    after the analytic residual-shear correction. To sample the image at a
+    grid position, undo the shear: ``y_image = y_grid + skew_slope * x``.
+    """
+
+    u_v: float  # vertical dot pitch (px)
+    u_h: float  # horizontal dot pitch (px)
+    advance: float  # cell advance (px)
+    skew_slope: float  # residual shear that was removed from dot ys
+    lines: list[LineGrid] = field(default_factory=list)
+
+    def slot_centers(self, line: LineGrid, cell_idx: int) -> tuple[tuple[float, float], ...]:
+        """Grid centres of the 6 dot slots of one cell (dot numbers 1-6)."""
+        x0 = line.origin_x + cell_idx * self.advance
+        return tuple(
+            (x0 + col * self.u_h, line.y_top + row * self.u_v)
+            for col in (0, 1)
+            for row in (0, 1, 2)
+        )
 
 
 @dataclass
@@ -58,6 +98,7 @@ class GroupingResult:
     flags: list[Flag] = field(default_factory=list)
     total_cells: int = 0
     recovered_via_fallback: bool = False  # rows recovered by lattice fallback (K2)
+    grid: PageGrid | None = None  # fitted grid model (Stage 3D-M1)
 
 
 def _cluster_1d(items: list, key, threshold: float) -> list[list]:
@@ -337,8 +378,10 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
     rows, row_centers, u_v = _row_structure(dots, cluster_threshold, fallback_unit)
 
     # Residual skew correction from the dot geometry itself (Stage 3D-D).
+    applied_slope = 0.0
     slope = _estimate_residual_skew(rows, u_v)
     if _SKEW_MIN_SLOPE < abs(slope) <= _SKEW_MAX_SLOPE:
+        applied_slope = slope
         dots = [replace(d, y=d.y - slope * d.x) for d in dots]
         rows, row_centers, u_v = _row_structure(dots, cluster_threshold, fallback_unit)
         if abs(slope) > 0.05:  # ~3 degrees: correction applied but worth flagging
@@ -483,9 +526,11 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
             )
         )
     per_line: list[list[tuple[Dot, int]]] = []  # (dot, row_index_in_cell)
+    per_line_meta: list[tuple[float, int]] = []  # (y0, lift) per line
     for group_index, group in enumerate(line_groups):
         y0 = row_centers[group[0]]
         lift = lifts[group_index]
+        per_line_meta.append((y0, lift))
         line_dots: list[tuple[Dot, int]] = []
         for row_i in group:
             row_index = int(round((row_centers[row_i] - y0) / u_v)) + lift
@@ -535,8 +580,10 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
     lines_out: list[list[CellCandidate]] = []
     residual_means: list[float] = []
     uncertain_columns = 0
+    grid = PageGrid(u_v=u_v, u_h=u_h, advance=advance, skew_slope=applied_slope)
 
-    for line_number, (columns, centers) in enumerate(line_columns, start=1):
+    for line_index, (columns, centers) in enumerate(line_columns):
+        line_number = line_index + 1
         if not columns:
             continue
         assignment, mean_residual = _fit_line_columns(centers, u_h, advance)
@@ -556,6 +603,25 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
                 else:
                     slot[dot_number] = dot
 
+        # Fitted line geometry: origin of grid cell 0 column 0 (median over
+        # every assigned column so a single bad column cannot skew it) and
+        # the y of dot row 0 from the line-ladder anchoring above.
+        y0, lift = per_line_meta[line_index]
+        origin_x = float(
+            median(
+                center - (cell_idx * advance + col_in_cell * u_h)
+                for (cell_idx, col_in_cell, _), center in zip(assignment, centers)
+            )
+        )
+        line_grid = LineGrid(
+            line_number=line_number,
+            y_top=float(y0 - lift * u_v),
+            origin_x=origin_x,
+            first_cell_idx=min(cell_slots) if cell_slots else 0,
+            last_cell_idx=max(cell_slots) if cell_slots else 0,
+        )
+        grid.lines.append(line_grid)
+
         line_cells: list[CellCandidate] = []
         for cell_idx in sorted(cell_slots):
             slot = cell_slots[cell_idx]
@@ -572,6 +638,7 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
                     dots=tuple(sorted(slot)),
                     bbox=(int(x1), int(y1), int(round(x2)), int(round(y2))),
                     confidence=round(confidence, 3),
+                    slot_centers=grid.slot_centers(line_grid, cell_idx),
                 )
             )
         lines_out.append(line_cells)
@@ -603,4 +670,5 @@ def group_dots(dots: list[Dot]) -> GroupingResult:
         flags=dedupe_flags(flags),
         total_cells=total_cells,
         recovered_via_fallback=recovered_via_lattice,
+        grid=grid if grid.lines else None,
     )

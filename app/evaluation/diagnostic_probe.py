@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 
 from app.core.config import get_settings
@@ -52,6 +53,7 @@ from app.ocr.braille_decode import token_lines_to_unicode
 # pipeline so the probe sees exactly what /ocr sees. It is module-private
 # there; if it is ever renamed this import - and only this import - breaks.
 from app.ocr.capture_normalization import detect_with_normalisation
+from app.ocr.dot_evidence import refine_grouping
 from app.ocr.pipeline import _select_variant, run_ocr
 from app.translation.fallback_translator import back_translate_unicode_lines
 from app.translation.liblouis_adapter import is_grade2_table, liblouis_back_translate
@@ -96,6 +98,12 @@ class ProbeResult:
     capture_rescaled: bool = False
     capture_rotation_applied: int = 0
     capture_cropped: bool = False
+
+    # Grid-evidence re-scoring (Stage 3D-M1)
+    evidence_applied: bool = False
+    evidence_cells_changed: int = 0
+    evidence_cells_recovered: int = 0
+    evidence_cells_dropped: int = 0
 
     # Dot detection (winning variant, exactly as /ocr would select it)
     mode: str = ""
@@ -146,6 +154,10 @@ class ProbeResult:
             "capture_rescaled": self.capture_rescaled,
             "capture_rotation_applied": self.capture_rotation_applied,
             "capture_cropped": self.capture_cropped,
+            "evidence_applied": self.evidence_applied,
+            "evidence_cells_changed": self.evidence_cells_changed,
+            "evidence_cells_recovered": self.evidence_cells_recovered,
+            "evidence_cells_dropped": self.evidence_cells_dropped,
             "mode": self.mode,
             "raw_candidates": self.raw_candidates,
             "accepted_dots": self.accepted_dots,
@@ -300,6 +312,19 @@ def probe_image_file(path: Path) -> ProbeResult:
     result.stage = STAGE_L3
 
     try:
+        # Same grid-evidence re-scoring as /ocr (Stage 3D-M1).
+        refinement = refine_grouping(detection, grouping)
+        if refinement.applied and refinement.cells_changed:
+            grouping = dataclass_replace(
+                grouping,
+                lines=refinement.lines,
+                total_cells=refinement.total_cells,
+            )
+            result.evidence_applied = True
+            result.evidence_cells_changed = refinement.cells_changed
+            result.evidence_cells_recovered = refinement.cells_recovered
+            result.evidence_cells_dropped = refinement.cells_dropped
+            result.total_cells = grouping.total_cells
         token_lines, _raw_cells, _reconstruction_flags = reconstruct_lines(grouping)
         unicode_lines = token_lines_to_unicode(token_lines)
         raw_braille = "\n".join(unicode_lines)
