@@ -51,8 +51,8 @@ from app.ocr.braille_decode import token_lines_to_unicode
 # The variant-selection helper is deliberately reused from the production
 # pipeline so the probe sees exactly what /ocr sees. It is module-private
 # there; if it is ever renamed this import - and only this import - breaks.
+from app.ocr.capture_normalization import detect_with_normalisation
 from app.ocr.pipeline import _select_variant, run_ocr
-from app.ocr.preprocessing import preprocess
 from app.translation.fallback_translator import back_translate_unicode_lines
 from app.translation.liblouis_adapter import is_grade2_table, liblouis_back_translate
 
@@ -91,6 +91,11 @@ class ProbeResult:
     file_size_bytes: int = 0
     width: int = 0
     height: int = 0
+
+    # Capture normalisation (Stage 3D-L1): what was applied to decode
+    capture_rescaled: bool = False
+    capture_rotation_applied: int = 0
+    capture_cropped: bool = False
 
     # Dot detection (winning variant, exactly as /ocr would select it)
     mode: str = ""
@@ -138,6 +143,9 @@ class ProbeResult:
             "file_size_bytes": self.file_size_bytes,
             "width": self.width,
             "height": self.height,
+            "capture_rescaled": self.capture_rescaled,
+            "capture_rotation_applied": self.capture_rotation_applied,
+            "capture_cropped": self.capture_cropped,
             "mode": self.mode,
             "raw_candidates": self.raw_candidates,
             "accepted_dots": self.accepted_dots,
@@ -238,8 +246,14 @@ def probe_image_file(path: Path) -> ProbeResult:
     result.height, result.width = gray.shape[:2]
 
     try:
-        pre = preprocess(gray)
-        detection, grouping = _select_variant(pre.variants)
+        # Same capture-normalisation path as /ocr (Stage 3D-L1): oversized
+        # photos are downscaled and a bounded rotation/crop rescue ladder
+        # runs when the upright attempt forms no cells.
+        normalised = detect_with_normalisation(gray, _select_variant)
+        detection, grouping = normalised.detection, normalised.grouping
+        result.capture_rescaled = normalised.rescaled
+        result.capture_rotation_applied = normalised.rotation_applied
+        result.capture_cropped = normalised.cropped
     except Exception:
         result.failure_point = FAILURE_INTERNAL_ERROR
         return result
