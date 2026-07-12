@@ -21,6 +21,7 @@ from app.core.logging import get_logger
 from app.models.requests import OcrRequest
 from app.models.responses import Flag, OcrResponse, PageResult
 from app.ocr.braille_decode import token_lines_to_unicode
+from app.ocr.capture_normalization import detect_with_normalisation
 from app.ocr.cell_grouping import GroupingResult, group_dots
 from app.ocr.confidence import (
     EMBOSS_MODE_CAP,
@@ -46,7 +47,7 @@ from app.ocr.flags import (
 )
 from app.ocr.image_decode import SUPPORTED_MIME_TYPES, ImageDecodeError, decode_data_url
 from app.ocr.line_reconstruction import reconstruct_lines
-from app.ocr.preprocessing import MODE_EMBOSS, preprocess
+from app.ocr.preprocessing import MODE_EMBOSS
 from app.translation.fallback_translator import back_translate_unicode_lines
 from app.translation.liblouis_adapter import is_grade2_table, liblouis_back_translate
 
@@ -173,11 +174,16 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
     try:
         flags: list[Flag] = []
 
-        # --- Stage 3: preprocessing --------------------------------------------
-        pre = preprocess(gray)
+        # --- Stage 3: preprocessing + capture normalisation (Stage 3D-L1) ------
+        # Oversized phone photos are downscaled to the calibrated dot scale;
+        # when the upright attempt forms no cells, a bounded rescue ladder
+        # retries rotations and a background crop. Images that already decode
+        # are never altered.
+        normalised = detect_with_normalisation(gray, _select_variant)
 
         # --- Stages 4-5: dot detection + grouping (best of dark/emboss) ---------
-        detection, grouping = _select_variant(pre.variants)
+        detection, grouping = normalised.detection, normalised.grouping
+        flags.extend(normalised.flags)
         dots = detection.dots
         detection_quality = detection.quality
         image_quality = detection.image_quality

@@ -6,9 +6,15 @@
       "runtimeExecutable": ".venv\\Scripts\\python.exe",
       "runtimeArgs": [
         "-c",
-        "import os; os.environ['DEMO_PAGE_ENABLED'] = 'true'; import uvicorn; uvicorn.run('app.main:app', port=8000)"
+        "import os; os.environ['DEMO_PAGE_ENABLED'] = 'true'; os.environ.setdefault('OCR_ENGINE_API_KEY', 'local-test-key'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
       ],
       "port": 8000
+    },
+    {
+      "name": "insighted-mvp",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "D:\\insighted-ai-mvp", "run", "dev"],
+      "port": 3000
     }
   ]
 }

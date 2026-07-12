@@ -13,7 +13,7 @@ import io
 import re
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.models.responses import Flag
 from app.ocr.flags import CATEGORY_LOW_IMAGE_QUALITY, make_flag
@@ -100,14 +100,26 @@ def decode_data_url(
 
     try:
         image = Image.open(io.BytesIO(raw))
-        width, height = image.size
         image_format = image.format
+        try:
+            # Phone cameras record physical orientation in EXIF rather than
+            # rotating pixels; honour it so upright-held photos arrive
+            # upright. Any EXIF parsing problem falls back to the raw image.
+            image = ImageOps.exif_transpose(image)
+        except Exception:
+            pass
+        width, height = image.size
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         raise ImageDecodeError(
             "Uploaded data could not be read as a PNG or JPEG image."
         ) from None
 
-    if image_format not in ("PNG", "JPEG"):
+    # MPO (Multi-Picture Object) is the JPEG variant many phone cameras
+    # actually emit - a normal JPEG with extra embedded frames (depth map /
+    # thumbnail). Pillow reports it as MPO and exposes the primary photo as
+    # the first frame, so it is accepted like JPEG (Stage 3D-L1: real staff
+    # phone photos were rejected outright before this).
+    if image_format not in ("PNG", "JPEG", "MPO"):
         raise ImageDecodeError(
             f"Image content is {image_format or 'unknown'}, not PNG or JPEG."
         )
