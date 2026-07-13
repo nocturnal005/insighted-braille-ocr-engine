@@ -22,13 +22,14 @@ from app.core.logging import get_logger
 from app.models.requests import OcrRequest
 from app.models.responses import Flag, OcrResponse, PageResult
 from app.ocr.braille_decode import token_lines_to_unicode
-from app.ocr.capture_normalization import detect_with_normalisation
+from app.ocr.capture_normalization import detect_with_normalisation, _quick_readability
 from app.ocr.cell_grouping import GroupingResult, group_dots
 from app.ocr.dot_evidence import refine_grouping
 from app.ocr.confidence import (
     EMBOSS_MODE_CAP,
     FALLBACK_TRANSLATION_CAP,
     LATTICE_RECOVERY_CAP,
+    TEMPLATE_READER_CAP,
     combined_confidence,
     dot_size_cap,
     noise_ratio_factor,
@@ -50,12 +51,23 @@ from app.ocr.flags import (
 from app.ocr.image_decode import SUPPORTED_MIME_TYPES, ImageDecodeError, decode_data_url
 from app.ocr.line_reconstruction import reconstruct_lines
 from app.ocr.preprocessing import MODE_EMBOSS
+from app.ocr.template_reader import read_page as template_read_page
 from app.translation.fallback_translator import back_translate_unicode_lines
 from app.translation.liblouis_adapter import is_grade2_table, liblouis_back_translate
 
 logger = get_logger(__name__)
 
 _BRAILLE_BASE = 0x2800
+
+# Stage 3D-N1 template-reader gate. The full-resolution template reader runs
+# only when the blob path's decode is unreadable — either zero cells or a
+# draft the Grade 1 fallback can barely read (real embossed photos, with or
+# without handwriting ink, land at 0.00-0.60; every synthetic/clean input
+# measures >=0.94, so they never trigger it). It then replaces the blob decode
+# only when it reads materially better, so a page the blob path already reads
+# well is never touched.
+_TEMPLATE_TRIGGER_READABILITY = 0.75
+_TEMPLATE_WIN_MARGIN = 0.10
 
 
 def _new_request_id() -> str:
@@ -186,6 +198,33 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
         # --- Stages 4-5: dot detection + grouping (best of dark/emboss) ---------
         detection, grouping = normalised.detection, normalised.grouping
         flags.extend(normalised.flags)
+
+        # --- Stage 3D-N1: full-resolution template-reader rescue ----------------
+        # When the blob pipeline's decode is unreadable (zero cells, or a draft
+        # the Grade 1 fallback can barely read — the signature of a real
+        # embossed photo, with or without handwriting ink), re-read the
+        # full-resolution image by self-calibrated template matching. It
+        # recovers faint embossed dots the downscaled blob path cannot. Gated on
+        # the blob decode being unreadable AND the template read being clearly
+        # more readable, so a page the blob path already reads well (every
+        # synthetic/clean input, which measures >=0.94) is never touched. Fails
+        # closed: read_page returns None unless the matched dots form a
+        # self-consistent, readable lattice.
+        used_template_reader = False
+        blob_readability = (
+            _quick_readability(grouping) if grouping.total_cells else 0.0
+        )
+        if blob_readability < _TEMPLATE_TRIGGER_READABILITY:
+            template_result = template_read_page(gray)
+            if template_result is not None and (
+                _quick_readability(template_result.grouping)
+                > blob_readability + _TEMPLATE_WIN_MARGIN
+            ):
+                detection = template_result.detection
+                grouping = template_result.grouping
+                flags.extend(template_result.flags)
+                used_template_reader = True
+
         dots = detection.dots
         detection_quality = detection.quality
         image_quality = detection.image_quality
@@ -346,6 +385,10 @@ def run_ocr(request: OcrRequest) -> OcrResponse:
         # recovery read as confident (Stage 3D-K2).
         if grouping.recovered_via_fallback:
             confidence = min(confidence, LATTICE_RECOVERY_CAP)
+        # The template reader is a last-ditch rescue on total blob-pipeline
+        # failure; its inferred structure must never read as confident (N1).
+        if used_template_reader:
+            confidence = min(confidence, TEMPLATE_READER_CAP)
 
         if confidence < 0.55:
             flags.append(

@@ -34,6 +34,14 @@ FALLBACK_TRANSLATION_CAP = 0.95
 # a draft can never read as confident regardless of how cleanly its columns fit.
 LATTICE_RECOVERY_CAP = 0.55
 
+# Stage 3D-N1: the full-resolution template reader only runs when the entire
+# blob pipeline (including the L1 rescue ladder) formed zero cells — a total
+# failure. Its draft is genuinely useful (it recovers readable text the blob
+# path cannot) but the method is experimental and its cell/line structure is
+# inferred, so it must never read as confident. Cap at the lattice-recovery
+# level: a draft for specialist review, never a reliable transcription.
+TEMPLATE_READER_CAP = 0.55
+
 # Dot-size honesty (Stage 3D-G2): decoding degrades sharply as dots approach
 # the ~6 px readable floor, but none of the blend factors senses absolute
 # scale (small dots are still round and evenly spaced), so near-floor pages
