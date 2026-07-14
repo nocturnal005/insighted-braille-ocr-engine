@@ -17,4 +17,6 @@ USER ocr
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Managed hosts inject $PORT and require the service to bind to it; default to
+# 8000 so local `docker run` and the demo flow are unchanged.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
