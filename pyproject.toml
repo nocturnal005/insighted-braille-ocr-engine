@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insighted-braille-ocr"
+version = "0.1.0"
+description = "Draft-only Braille OCR engine for InsightEd AI. Output always requires QTVI or Braille-literate specialist verification; this engine never claims certified Braille accuracy."
+requires-python = ">=3.11"
+
+# Runtime only. `uvicorn` is intentionally absent: it is needed to *serve* the
+# engine standalone (see Dockerfile), not to call run_ocr in-process. Omitting
+# it keeps the install small enough to run inside a serverless function
+# alongside the InsightEd AI app, so one deployment serves both.
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5,<3",
+    "numpy>=1.26,<3",
+    "opencv-python-headless>=4.10,<5",
+    "Pillow>=10.4,<13",
+]
+
+[project.optional-dependencies]
+serve = ["uvicorn[standard]>=0.30,<1"]
+test = ["pytest>=8.2,<9", "httpx>=0.27,<1"]
+
+# Ship the engine packages; tests are not part of the installable artefact.
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["app.tests*"]
